@@ -292,9 +292,31 @@ canvas {
   color: white;
 }
 
-#cameraCanvas {
+.camera-feed {
+  position: relative;
   aspect-ratio: 4 / 3;
   border-radius: 16px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+#cameraVideo,
+#cameraCanvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#cameraVideo {
+  object-fit: cover;
+  transform: scaleX(-1);
+  background: #dcefff;
+}
+
+#cameraCanvas {
+  background: transparent;
+  pointer-events: none;
 }
 
 .metric-strip {

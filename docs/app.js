@@ -67,6 +67,7 @@ const els = {
   startRoundButton: document.getElementById("startRoundButton"),
   resetLeaderboardButton: document.getElementById("resetLeaderboardButton"),
   hostSummaryText: document.getElementById("hostSummaryText"),
+  cameraVideo: document.getElementById("cameraVideo"),
   cameraCanvas: document.getElementById("cameraCanvas"),
   gameCanvas: document.getElementById("gameCanvas"),
 };
@@ -167,10 +168,12 @@ function refreshCameraIndicators() {
   if (state.role === "host") {
     els.cameraReadyText.textContent = "主持人無需鏡頭";
     els.currentPoseChip.textContent = "主持人模式";
+    els.cameraVideo.style.visibility = "hidden";
     return;
   }
 
   els.cameraReadyText.textContent = state.cameraReady ? "鏡頭測試完成" : "未啟動";
+  els.cameraVideo.style.visibility = state.cameraReady ? "visible" : "hidden";
 
   if (state.currentPose) {
     els.currentPoseChip.textContent = state.currentPose;
@@ -242,6 +245,14 @@ async function startCamera() {
     state.webcam = new tmPose.Webcam(480, 360, true);
     await state.webcam.setup();
     await state.webcam.play();
+    if (state.webcam.webcam && state.webcam.webcam.srcObject) {
+      els.cameraVideo.srcObject = state.webcam.webcam.srcObject;
+      try {
+        await els.cameraVideo.play();
+      } catch (videoError) {
+        console.warn("Camera preview autoplay was blocked", videoError);
+      }
+    }
 
     state.cameraReady = true;
     refreshCameraIndicators();
@@ -323,12 +334,7 @@ async function runPosePrediction() {
 }
 
 function drawRawCameraFrame() {
-  if (!state.webcam || !state.webcam.canvas) {
-    return;
-  }
-
   cameraCtx.clearRect(0, 0, els.cameraCanvas.width, els.cameraCanvas.height);
-  cameraCtx.drawImage(state.webcam.canvas, 0, 0, els.cameraCanvas.width, els.cameraCanvas.height);
 }
 
 function drawCamera(pose) {
@@ -1094,6 +1100,7 @@ els.thresholdInput.addEventListener("input", updateThreshold);
 updateThreshold();
 updateRoleUI();
 els.apiBaseUrlText.textContent = state.apiBaseUrl || `${window.location.origin} (same-origin)`;
+els.cameraVideo.style.visibility = "hidden";
 setStatus("玩家模型需包含 Jump / stay / down，完成鏡頭測試後加入等待室；主持人可直接加入房間");
 renderCameraPlaceholder();
 drawIdleGame("等待加入房間");

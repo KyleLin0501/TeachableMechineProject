@@ -43,6 +43,29 @@ PUBLIC_API_BASE_URL=https://your-render-service.onrender.com npm run build:pages
 
 會直接作為 GitHub Pages 內容。
 
+## GitHub Pages 自動部署
+
+專案已附上 GitHub Actions workflow：
+
+- [.github/workflows/deploy-pages.yml](/Users/linkaiyu/Documents/Web/TeachableMechineProject/.github/workflows/deploy-pages.yml)
+
+請在 GitHub repo 內設定：
+
+1. `Settings` → `Pages`
+2. `Source` 選 `GitHub Actions`
+3. `Settings` → `Secrets and variables` → `Actions` → `Variables`
+4. 新增 repo variable：
+
+```text
+PUBLIC_API_BASE_URL=https://your-render-service.onrender.com
+```
+
+之後每次 push 到 `main`，GitHub Actions 都會自動：
+
+- 執行 `npm run build:pages`
+- 產出 `docs/`
+- 部署到 GitHub Pages
+
 ## Render 後端設定
 
 專案根目錄包含 [render.yaml](/Users/linkaiyu/Documents/Web/TeachableMechineProject/render.yaml)。

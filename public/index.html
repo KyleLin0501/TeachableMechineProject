@@ -97,7 +97,10 @@
                 <p class="label">鏡頭</p>
                 <p id="currentPoseChip" class="pill">未啟動</p>
               </div>
-              <canvas id="cameraCanvas" width="480" height="360"></canvas>
+              <div class="camera-feed">
+                <video id="cameraVideo" autoplay playsinline muted></video>
+                <canvas id="cameraCanvas" width="480" height="360"></canvas>
+              </div>
             </div>
           </div>
 

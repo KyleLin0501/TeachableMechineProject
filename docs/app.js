@@ -25,6 +25,8 @@ const state = {
   predictBusy: false,
   currentPose: "",
   currentConfidence: 0,
+  currentCommand: "stay",
+  predictions: [],
   poseArmed: false,
   serverOffsetMs: 0,
   localGame: createLocalGameState(),
@@ -46,6 +48,10 @@ const els = {
   apiBaseUrlText: document.getElementById("apiBaseUrlText"),
   cameraReadyText: document.getElementById("cameraReadyText"),
   statusText: document.getElementById("statusText"),
+  loadedModelUrlText: document.getElementById("loadedModelUrlText"),
+  currentCommandText: document.getElementById("currentCommandText"),
+  thresholdEchoText: document.getElementById("thresholdEchoText"),
+  predictionList: document.getElementById("predictionList"),
   roomStatusText: document.getElementById("roomStatusText"),
   phaseText: document.getElementById("phaseText"),
   roundText: document.getElementById("roundText"),
@@ -82,6 +88,7 @@ function createLocalGameState() {
     startAt: null,
     status: "idle",
     score: 0,
+    elapsedMs: 0,
     reportedDeath: false,
     obstacles: [],
     dino: {
@@ -152,6 +159,7 @@ function resolveActionLabels(labels) {
 function updateThreshold() {
   state.threshold = Number(els.thresholdInput.value);
   els.thresholdValue.textContent = state.threshold.toFixed(2);
+  els.thresholdEchoText.textContent = state.threshold.toFixed(2);
 }
 
 function updateRoleUI() {
@@ -227,10 +235,16 @@ async function loadModel() {
     state.modelName = new URL(baseUrl).pathname.split("/").filter(Boolean).pop() || "Pose Model";
 
     els.selectedPoseText.textContent = state.selectedLabel;
+    els.loadedModelUrlText.textContent = state.modelUrl;
     refreshActionButtons();
+    renderPredictionList();
     setStatus(`模型載入完成，已偵測到 ${state.selectedLabel}`);
   } catch (error) {
     console.error(error);
+    state.predictions = [];
+    els.loadedModelUrlText.textContent = "載入失敗";
+    els.currentCommandText.textContent = "模型未就緒";
+    renderPredictionList();
     setStatus(`模型載入失敗：${error.message}`);
   }
 }
@@ -313,12 +327,21 @@ async function runPosePrediction() {
       return item.probability > top.probability ? item : top;
     }, predictions[0]);
 
+    state.predictions = predictions
+      .map((item) => ({
+        className: item.className,
+        probability: item.probability,
+      }))
+      .sort((left, right) => right.probability - left.probability);
     state.currentPose = bestPrediction.className;
     state.currentConfidence = bestPrediction.probability;
+    state.currentCommand = getPoseCommand();
 
     els.currentPoseText.textContent = state.currentPose || "未辨識";
     els.currentConfidenceText.textContent = state.currentConfidence.toFixed(2);
+    els.currentCommandText.textContent = state.currentCommand;
     refreshCameraIndicators();
+    renderPredictionList();
 
     drawCamera(pose);
     applyPoseCommand();
@@ -388,18 +411,51 @@ function getPoseCommand() {
   return "stay";
 }
 
-function applyPoseCommand() {
-  if (state.role !== "player" || !state.joined || !state.actionLabels) {
+function renderPredictionList() {
+  if (!state.model) {
+    els.predictionList.innerHTML = "<p>載入模型後，這裡會顯示每個類別的即時機率。</p>";
     return;
   }
 
+  if (state.predictions.length === 0) {
+    els.predictionList.innerHTML = "<p>鏡頭啟動後，這裡會顯示 Jump / stay / down 的辨識機率。</p>";
+    return;
+  }
+
+  els.predictionList.innerHTML = state.predictions
+    .map((prediction) => {
+      const percentage = (prediction.probability * 100).toFixed(1);
+      return `
+        <article class="prediction-item">
+          <div class="prediction-topline">
+            <strong>${escapeHtml(prediction.className)}</strong>
+            <span>${percentage}%</span>
+          </div>
+          <div class="prediction-bar"><span style="width:${percentage}%"></span></div>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function applyPoseCommand() {
+  if (state.role !== "player" || !state.joined || !state.actionLabels) {
+    if (!(state.role === "player" && state.actionLabels && state.cameraReady)) {
+      return;
+    }
+  }
+
   const game = state.localGame;
+  if (!(game.status === "running" || game.status === "practice")) {
+    return;
+  }
+
   const dino = game.dino;
   const command = getPoseCommand();
 
-  dino.isCrouching = command === "down" && game.status === "running" && dino.y === 0;
+  dino.isCrouching = command === "down" && dino.y === 0;
 
-  if (command === "jump" && !state.poseArmed && game.status === "running") {
+  if (command === "jump" && !state.poseArmed) {
     state.poseArmed = true;
     dino.isCrouching = false;
     triggerJump();
@@ -474,6 +530,25 @@ function getMyParticipant() {
   return state.latestRoom ? state.latestRoom.me : null;
 }
 
+function canPracticeLocally() {
+  return state.role === "player" && state.cameraReady && state.actionLabels;
+}
+
+function resetPracticeGame() {
+  state.localGame = createLocalGameState();
+  state.localGame.seed = "practice";
+  state.localGame.status = "practice";
+  state.localGame.obstacles = createObstacleTimeline(424242);
+}
+
+function ensurePracticeGame() {
+  if (state.localGame.status === "practice" && state.localGame.seed === "practice") {
+    return;
+  }
+
+  resetPracticeGame();
+}
+
 function shouldUseFocusMode() {
   const room = state.latestRoom;
   const me = getMyParticipant();
@@ -503,6 +578,13 @@ function updateLocalGame(deltaMs) {
   const room = state.latestRoom;
   const me = getMyParticipant();
 
+  if ((!room || !me) && canPracticeLocally()) {
+    ensurePracticeGame();
+    runPracticeLoop(deltaMs);
+    syncPresentationMode();
+    return;
+  }
+
   if (!room || !me || state.role !== "player") {
     syncPresentationMode();
     drawIdleGame("主持人可從右側後台啟動回合");
@@ -512,6 +594,13 @@ function updateLocalGame(deltaMs) {
   prepareRound(room);
 
   if (!isMeActiveInCurrentRound()) {
+    if (canPracticeLocally()) {
+      ensurePracticeGame();
+      runPracticeLoop(deltaMs);
+      syncPresentationMode();
+      return;
+    }
+
     state.localGame.status = "idle";
     syncPresentationMode();
     drawIdleGame("等待主持人將你納入下一回合");
@@ -566,6 +655,29 @@ function updateLocalGame(deltaMs) {
 
   if (detectCollision(elapsedMs)) {
     handleLocalDeath();
+  }
+}
+
+function runPracticeLoop(deltaMs) {
+  const dt = Math.min(deltaMs, 32) / 1000;
+  const dino = state.localGame.dino;
+  const physics = state.localGame.physics;
+
+  state.localGame.status = "practice";
+  state.localGame.elapsedMs += deltaMs;
+
+  dino.y = Math.max(0, dino.y + dino.vy * dt);
+  dino.vy -= physics.gravity * dt;
+
+  if (dino.y <= 0) {
+    dino.y = 0;
+    dino.vy = Math.max(0, dino.vy);
+  }
+
+  state.localGame.score = Math.floor(state.localGame.elapsedMs / 45);
+
+  if (detectCollision(state.localGame.elapsedMs)) {
+    resetPracticeGame();
   }
 }
 
@@ -667,8 +779,16 @@ function renderGame() {
   drawClouds();
   drawGround();
 
+  if (game.status === "practice") {
+    drawObstacles(game.elapsedMs);
+    drawDino();
+    drawOverlay("練習模式", `先熟悉 Jump / stay / down，碰撞後會自動重來`);
+    updateGameMetrics();
+    return;
+  }
+
   if (!room || !me || state.role !== "player" || !isMeActiveInCurrentRound()) {
-    drawIdleGame(state.role === "host" ? "主持人不用跑道，可直接操作右側後台。" : "進入等待房間後，主持人開始回合才會出現賽道。");
+    drawIdleGame(state.role === "host" ? "主持人不用跑道，可直接操作右側後台。" : "進入等待房間後，先用練習模式熟悉控制。");
     updateGameMetrics();
     return;
   }
@@ -928,6 +1048,9 @@ function renderRoom(room) {
       : `房內共有 ${totalPlayers} 位玩家，其中 ${readyPlayers} 位已完成模型與鏡頭準備`;
 
   els.playerStateText.textContent = me ? me.currentState || "待命" : "待命";
+  if (state.localGame.status === "practice") {
+    els.playerStateText.textContent = "練習中";
+  }
   els.selectedPoseText.textContent = state.selectedLabel || me?.selectedLabel || "-";
   updateGameMetrics();
   renderLeaderboard(room);
@@ -1101,6 +1224,8 @@ updateThreshold();
 updateRoleUI();
 els.apiBaseUrlText.textContent = state.apiBaseUrl || `${window.location.origin} (same-origin)`;
 els.cameraVideo.style.visibility = "hidden";
+els.currentCommandText.textContent = "模型未就緒";
+renderPredictionList();
 setStatus("玩家模型需包含 Jump / stay / down，完成鏡頭測試後加入等待室；主持人可直接加入房間");
 renderCameraPlaceholder();
 drawIdleGame("等待加入房間");

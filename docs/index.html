@@ -69,6 +69,30 @@
           玩家模型需包含 `Jump`、`stay`、`down` 三個動作。主持人可直接加入房間並控制回合。
         </p>
         <p id="statusText" class="status">請先完成身份與房間設定</p>
+
+        <section class="diagnostic-panel player-only">
+          <div class="section-head">
+            <div>
+              <p class="label">模型診斷</p>
+              <h3>即時辨識結果</h3>
+            </div>
+          </div>
+          <div class="diagnostic-grid">
+            <div>
+              <p class="metric-label">模型 URL</p>
+              <strong id="loadedModelUrlText">尚未載入</strong>
+            </div>
+            <div>
+              <p class="metric-label">控制指令</p>
+              <strong id="currentCommandText">尚未開始</strong>
+            </div>
+            <div>
+              <p class="metric-label">辨識門檻</p>
+              <strong id="thresholdEchoText">0.86</strong>
+            </div>
+          </div>
+          <div id="predictionList" class="prediction-list"></div>
+        </section>
       </section>
 
       <section class="workspace">

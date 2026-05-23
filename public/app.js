@@ -157,10 +157,27 @@ function updateRoleUI() {
   state.role = els.roleSelect.value === "host" ? "host" : "player";
   document.body.classList.toggle("role-host", state.role === "host");
   els.joinRoomButton.textContent = state.role === "host" ? "加入主持後台" : "3. 進入等待房間";
-  els.cameraReadyText.textContent = state.role === "host" ? "主持人無需鏡頭" : state.cameraReady ? "鏡頭測試完成" : "未啟動";
+  refreshCameraIndicators();
   refreshActionButtons();
   syncPresentationMode();
   renderCameraPlaceholder();
+}
+
+function refreshCameraIndicators() {
+  if (state.role === "host") {
+    els.cameraReadyText.textContent = "主持人無需鏡頭";
+    els.currentPoseChip.textContent = "主持人模式";
+    return;
+  }
+
+  els.cameraReadyText.textContent = state.cameraReady ? "鏡頭測試完成" : "未啟動";
+
+  if (state.currentPose) {
+    els.currentPoseChip.textContent = state.currentPose;
+    return;
+  }
+
+  els.currentPoseChip.textContent = state.cameraReady ? "鏡頭已啟動" : "未啟動";
 }
 
 function refreshActionButtons() {
@@ -227,14 +244,14 @@ async function startCamera() {
     await state.webcam.play();
 
     state.cameraReady = true;
-    els.cameraReadyText.textContent = "鏡頭測試完成";
+    refreshCameraIndicators();
     refreshActionButtons();
     setStatus("鏡頭已啟動，請測試跳躍姿勢是否能被辨識");
     startAnimationLoop();
   } catch (error) {
     console.error(error);
     state.cameraReady = false;
-    els.cameraReadyText.textContent = "鏡頭啟動失敗";
+    refreshCameraIndicators();
     setStatus(`鏡頭啟動失敗：${error.message}`);
     refreshActionButtons();
   }
@@ -276,22 +293,27 @@ async function runPosePrediction() {
     return;
   }
 
-  state.webcam.update();
-  const { pose, posenetOutput } = await state.model.estimatePose(state.webcam.canvas);
-  const predictions = await state.model.predict(posenetOutput);
-  const bestPrediction = predictions.reduce((top, item) => {
-    return item.probability > top.probability ? item : top;
-  }, predictions[0]);
+  try {
+    state.webcam.update();
+    const { pose, posenetOutput } = await state.model.estimatePose(state.webcam.canvas);
+    const predictions = await state.model.predict(posenetOutput);
+    const bestPrediction = predictions.reduce((top, item) => {
+      return item.probability > top.probability ? item : top;
+    }, predictions[0]);
 
-  state.currentPose = bestPrediction.className;
-  state.currentConfidence = bestPrediction.probability;
+    state.currentPose = bestPrediction.className;
+    state.currentConfidence = bestPrediction.probability;
 
-  els.currentPoseText.textContent = state.currentPose || "未辨識";
-  els.currentConfidenceText.textContent = state.currentConfidence.toFixed(2);
-  els.currentPoseChip.textContent = state.currentPose || "辨識中";
+    els.currentPoseText.textContent = state.currentPose || "未辨識";
+    els.currentConfidenceText.textContent = state.currentConfidence.toFixed(2);
+    refreshCameraIndicators();
 
-  drawCamera(pose);
-  applyPoseCommand();
+    drawCamera(pose);
+    applyPoseCommand();
+  } catch (error) {
+    console.error(error);
+    refreshCameraIndicators();
+  }
 }
 
 function drawCamera(pose) {
@@ -310,12 +332,13 @@ function drawCamera(pose) {
 }
 
 function renderCameraPlaceholder() {
+  refreshCameraIndicators();
   cameraCtx.clearRect(0, 0, els.cameraCanvas.width, els.cameraCanvas.height);
   cameraCtx.fillStyle = "#edf7ff";
   cameraCtx.fillRect(0, 0, els.cameraCanvas.width, els.cameraCanvas.height);
   cameraCtx.fillStyle = "#1b3554";
   cameraCtx.font = "700 24px Avenir Next";
-  cameraCtx.fillText(state.role === "host" ? "主持人模式" : "等待鏡頭啟動", 28, 44);
+  cameraCtx.fillText(state.role === "host" ? "主持人模式" : state.cameraReady ? "鏡頭已啟動" : "等待鏡頭啟動", 28, 44);
   cameraCtx.fillStyle = "#6b7a90";
   cameraCtx.font = "16px Avenir Next";
   cameraCtx.fillText(

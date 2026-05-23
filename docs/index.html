@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Teachable Machine Pose Battle</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/pose@0.8/dist/teachablemachine-pose.min.js"></script>
+    <script src="./config.js"></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero">
+        <p class="eyebrow">Google Teachable Machine Pose Battle</p>
+        <h1>兩位學員各自載入自己的 Pose 模型後，即可進房連線對戰</h1>
+        <p class="hero-copy">
+          每位學員輸入自己的模型網址、選擇攻擊姿勢，進入相同房間號碼後就能同步對戰。
+          這個版本採用瀏覽器鏡頭偵測姿勢，達到指定信心值時會對對手造成傷害。
+        </p>
+      </section>
+
+      <section class="panel control-panel">
+        <div class="form-grid">
+          <label>
+            <span>玩家暱稱</span>
+            <input id="nicknameInput" type="text" placeholder="例如：學生 A" maxlength="20" />
+          </label>
+          <label>
+            <span>房間號碼</span>
+            <input id="roomInput" type="text" placeholder="例如：A101" maxlength="20" />
+          </label>
+          <label class="full-span">
+            <span>Teachable Machine 模型 URL</span>
+            <input
+              id="modelUrlInput"
+              type="url"
+              placeholder="貼上模型資料夾網址，例如 https://teachablemachine.withgoogle.com/models/xxxxx/"
+            />
+          </label>
+          <label>
+            <span>攻擊姿勢標籤</span>
+            <select id="labelSelect" disabled>
+              <option value="">請先載入模型</option>
+            </select>
+          </label>
+          <label>
+            <span>攻擊信心門檻</span>
+            <input id="thresholdInput" type="range" min="0.6" max="0.98" step="0.01" value="0.9" />
+            <strong id="thresholdValue">0.90</strong>
+          </label>
+        </div>
+
+        <div class="actions">
+          <button id="loadModelButton">1. 載入模型</button>
+          <button id="cameraButton" disabled>2. 啟動鏡頭</button>
+          <button id="joinRoomButton" disabled>3. 進入房間</button>
+          <button id="resetButton" disabled>重置對戰</button>
+        </div>
+
+        <p class="hint">
+          模型 URL 需指向匯出的模型資料夾，系統會自動去抓 `model.json` 與 `metadata.json`。
+        </p>
+        <p class="hint">後端 API：<span id="apiBaseUrlText">自動判定</span></p>
+        <p id="statusText" class="status">尚未載入模型</p>
+      </section>
+
+      <section class="battle-layout">
+        <article class="panel stage-panel">
+          <div class="video-frame">
+            <canvas id="canvas"></canvas>
+          </div>
+          <div class="pose-readout">
+            <p>目前辨識姿勢：<strong id="currentPoseText">尚未開始</strong></p>
+            <p>姿勢信心值：<strong id="currentConfidenceText">0.00</strong></p>
+          </div>
+        </article>
+
+        <article class="panel scoreboard-panel">
+          <div class="battle-header">
+            <div>
+              <p class="label">房間</p>
+              <h2 id="roomStatusText">未連線</h2>
+            </div>
+            <div>
+              <p class="label">狀態</p>
+              <h2 id="phaseText">等待中</h2>
+            </div>
+          </div>
+
+          <div class="players">
+            <section class="player-card me">
+              <p class="label">我方</p>
+              <h3 id="meName">未加入</h3>
+              <div class="hp-bar"><span id="meHpBar"></span></div>
+              <p id="meHpText">HP 100</p>
+              <p id="meSkillText">攻擊姿勢：-</p>
+            </section>
+
+            <section class="player-card opponent">
+              <p class="label">對手</p>
+              <h3 id="opponentName">等待對手加入</h3>
+              <div class="hp-bar"><span id="opponentHpBar"></span></div>
+              <p id="opponentHpText">HP 100</p>
+              <p id="opponentSkillText">攻擊姿勢：-</p>
+            </section>
+          </div>
+
+          <section class="event-log-wrap">
+            <div class="event-log-header">
+              <p class="label">對戰紀錄</p>
+              <p id="winnerText">尚未分出勝負</p>
+            </div>
+            <ul id="eventLog" class="event-log"></ul>
+          </section>
+        </article>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

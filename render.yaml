@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: teachable-machine-pose-battle-api
+    runtime: node
+    plan: free
+    buildCommand: "npm install"
+    startCommand: "npm start"
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: ALLOWED_ORIGINS
+        sync: false

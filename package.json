@@ -1,0 +1,10 @@
+{
+  "name": "teachable-machine-pose-battle",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Two-player Google Teachable Machine Pose battle demo",
+  "scripts": {
+    "start": "node server.js",
+    "build:pages": "node scripts/build-pages.js"
+  }
+}

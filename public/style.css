@@ -1,0 +1,276 @@
+:root {
+  color-scheme: light;
+  --bg-top: #fdf3d7;
+  --bg-bottom: #c6ebff;
+  --panel: rgba(255, 255, 255, 0.88);
+  --panel-border: rgba(15, 23, 42, 0.08);
+  --text: #132238;
+  --muted: #4b5b72;
+  --accent: #ff6b2c;
+  --accent-dark: #d94a09;
+  --blue: #1d78c1;
+  --green: #0c9b68;
+  --danger: #d94b4b;
+  --shadow: 0 24px 60px rgba(31, 55, 88, 0.18);
+  --radius-xl: 28px;
+  --radius-lg: 20px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Avenir Next", "Noto Sans TC", sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(circle at top left, rgba(255, 176, 99, 0.4), transparent 30%),
+    radial-gradient(circle at bottom right, rgba(41, 155, 255, 0.28), transparent 32%),
+    linear-gradient(160deg, var(--bg-top), var(--bg-bottom));
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+.app-shell {
+  width: min(1180px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 40px 0 56px;
+}
+
+.hero {
+  padding: 20px 6px 24px;
+}
+
+.eyebrow,
+.label,
+.hint {
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.hero h1 {
+  margin: 8px 0 12px;
+  font-size: clamp(2rem, 4vw, 3.8rem);
+  line-height: 1.05;
+  max-width: 900px;
+}
+
+.hero-copy {
+  max-width: 840px;
+  font-size: 1.04rem;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(14px);
+}
+
+.control-panel {
+  padding: 28px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.full-span {
+  grid-column: 1 / -1;
+}
+
+input,
+select {
+  width: 100%;
+  border: 1px solid rgba(19, 34, 56, 0.14);
+  border-radius: 16px;
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--text);
+}
+
+input[type="range"] {
+  padding: 0;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+button {
+  border: none;
+  border-radius: 999px;
+  padding: 14px 22px;
+  background: linear-gradient(135deg, var(--accent), #ff8f47);
+  color: white;
+  cursor: pointer;
+  font-weight: 700;
+  transition: transform 180ms ease, opacity 180ms ease, box-shadow 180ms ease;
+  box-shadow: 0 14px 24px rgba(255, 107, 44, 0.24);
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+  box-shadow: none;
+}
+
+.status {
+  margin: 16px 0 0;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(19, 34, 56, 0.06);
+  color: var(--text);
+}
+
+.battle-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 1.05fr) minmax(320px, 0.95fr);
+  gap: 22px;
+  margin-top: 22px;
+}
+
+.stage-panel,
+.scoreboard-panel {
+  padding: 24px;
+}
+
+.video-frame {
+  position: relative;
+  overflow: hidden;
+  aspect-ratio: 4 / 3;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, #0d1d33, #173963);
+}
+
+canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.pose-readout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.battle-header,
+.players,
+.event-log-header {
+  display: grid;
+  gap: 16px;
+}
+
+.battle-header,
+.players {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.player-card {
+  padding: 18px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.66);
+  border: 1px solid rgba(19, 34, 56, 0.08);
+}
+
+.player-card.me {
+  background: rgba(29, 120, 193, 0.08);
+}
+
+.player-card.opponent {
+  background: rgba(217, 75, 75, 0.08);
+}
+
+.player-card h3,
+.battle-header h2 {
+  margin: 6px 0 10px;
+}
+
+.hp-bar {
+  height: 14px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(19, 34, 56, 0.08);
+}
+
+.hp-bar span {
+  display: block;
+  height: 100%;
+  width: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--green), #58d79a);
+  transition: width 220ms ease, background 220ms ease;
+}
+
+.event-log-wrap {
+  margin-top: 18px;
+  padding: 18px;
+  border-radius: 22px;
+  background: rgba(19, 34, 56, 0.05);
+}
+
+.event-log {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.event-log li {
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--text);
+}
+
+@media (max-width: 920px) {
+  .battle-layout,
+  .battle-header,
+  .players,
+  .pose-readout,
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .app-shell {
+    width: min(100vw - 20px, 1180px);
+    padding-top: 24px;
+  }
+
+  .control-panel,
+  .stage-panel,
+  .scoreboard-panel {
+    padding: 20px;
+  }
+}

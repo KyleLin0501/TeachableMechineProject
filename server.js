@@ -11,6 +11,8 @@ const ALLOWED_ORIGINS = String(process.env.ALLOWED_ORIGINS || "")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
+const STALE_PLAYER_MS = 180_000;
+const COUNTDOWN_MS = 5000;
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -28,6 +30,19 @@ const rooms = new Map();
 
 function now() {
   return Date.now();
+}
+
+function sanitizeText(value, fallback, maxLength = 40) {
+  const trimmed = String(value || "").trim();
+  return trimmed.slice(0, maxLength) || fallback;
+}
+
+function isPlayerReady(player) {
+  if (!player || player.role === "host") {
+    return false;
+  }
+
+  return Boolean(player.modelUrl && player.selectedLabel && player.cameraReady && player.lobbyReady);
 }
 
 function setCorsHeaders(req, res) {
@@ -48,7 +63,6 @@ function setCorsHeaders(req, res) {
 }
 
 function sendJson(req, res, statusCode, payload) {
-  const json = JSON.stringify(payload);
   setCorsHeaders(req, res);
   res.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
@@ -56,7 +70,7 @@ function sendJson(req, res, statusCode, payload) {
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
   });
-  res.end(json);
+  res.end(JSON.stringify(payload));
 }
 
 function readJson(req) {
@@ -88,65 +102,63 @@ function readJson(req) {
   });
 }
 
-function makePlayerState({ playerId, nickname }) {
+function createParticipant({ participantId, nickname, role }) {
   return {
-    id: playerId,
-    nickname: nickname || "Player",
-    hp: 100,
+    id: participantId,
+    role: role === "host" ? "host" : "player",
+    nickname: sanitizeText(nickname, role === "host" ? "主持人" : "玩家", 24),
+    joinedAt: now(),
+    lastSeenAt: now(),
     modelUrl: "",
     modelName: "",
     labels: [],
     selectedLabel: "",
+    cameraReady: false,
+    lobbyReady: false,
     currentLabel: "",
     currentConfidence: 0,
-    attackCount: 0,
-    lastAttackAt: 0,
-    joinedAt: now(),
-    lastSeenAt: now(),
+    currentDistance: 0,
+    currentState: "idle",
+    activeThisRound: false,
+    isAlive: false,
+    latestScore: 0,
+    bestScore: 0,
+    totalScore: 0,
+    wins: 0,
+    roundsPlayed: 0,
+    eliminatedAt: 0,
   };
 }
 
-function makeRoom(roomId) {
+function createRoom(roomId) {
   return {
     id: roomId,
     createdAt: now(),
-    phase: "waiting",
-    winnerId: null,
-    players: {},
-    playerOrder: [],
+    hostId: null,
+    phase: "lobby",
+    participants: {},
+    participantOrder: [],
     lastEventId: 0,
     events: [],
+    history: [],
+    round: {
+      number: 0,
+      seed: null,
+      startAt: null,
+      countdownMs: COUNTDOWN_MS,
+      activeParticipantIds: [],
+      standings: [],
+      endedAt: null,
+    },
   };
 }
 
-function roomSummary(room, requesterId) {
-  const players = room.playerOrder
-    .map((playerId) => room.players[playerId])
-    .filter(Boolean)
-    .map((player) => ({
-      id: player.id,
-      nickname: player.nickname,
-      hp: player.hp,
-      modelName: player.modelName,
-      selectedLabel: player.selectedLabel,
-      currentLabel: player.currentLabel,
-      currentConfidence: player.currentConfidence,
-      attackCount: player.attackCount,
-      isRequester: player.id === requesterId,
-      lastSeenAt: player.lastSeenAt,
-    }));
+function ensureRoom(roomId) {
+  if (!rooms.has(roomId)) {
+    rooms.set(roomId, createRoom(roomId));
+  }
 
-  return {
-    id: room.id,
-    phase: room.phase,
-    winnerId: room.winnerId,
-    playerCount: players.length,
-    me: players.find((player) => player.id === requesterId) || null,
-    opponent: players.find((player) => player.id !== requesterId) || null,
-    players,
-    events: room.events.slice(-8),
-    serverTime: now(),
-  };
+  return rooms.get(roomId);
 }
 
 function addEvent(room, message, type = "info") {
@@ -158,95 +170,328 @@ function addEvent(room, message, type = "info") {
     createdAt: now(),
   });
 
-  if (room.events.length > 40) {
+  if (room.events.length > 50) {
     room.events.shift();
   }
 }
 
-function ensureRoom(roomId) {
-  if (!rooms.has(roomId)) {
-    rooms.set(roomId, makeRoom(roomId));
+function assignHostIfNeeded(room) {
+  const currentHost = room.hostId ? room.participants[room.hostId] : null;
+  if (currentHost && currentHost.role === "host") {
+    return;
   }
-  return rooms.get(roomId);
+
+  const explicitHost = room.participantOrder
+    .map((participantId) => room.participants[participantId])
+    .find((participant) => participant && participant.role === "host");
+
+  if (explicitHost) {
+    room.hostId = explicitHost.id;
+    return;
+  }
+
+  const fallbackHost = room.participantOrder
+    .map((participantId) => room.participants[participantId])
+    .find(Boolean);
+
+  room.hostId = fallbackHost ? fallbackHost.id : null;
+}
+
+function getRoundParticipants(room) {
+  return room.round.activeParticipantIds
+    .map((participantId) => room.participants[participantId])
+    .filter(Boolean);
+}
+
+function finalizeRound(room) {
+  const activeParticipants = getRoundParticipants(room);
+  if (activeParticipants.length === 0) {
+    room.phase = "lobby";
+    room.round.seed = null;
+    room.round.startAt = null;
+    room.round.standings = [];
+    room.round.endedAt = now();
+    return;
+  }
+
+  const standings = [...activeParticipants]
+    .sort((left, right) => {
+      if (right.latestScore !== left.latestScore) {
+        return right.latestScore - left.latestScore;
+      }
+      return right.eliminatedAt - left.eliminatedAt;
+    })
+    .map((participant, index) => ({
+      participantId: participant.id,
+      nickname: participant.nickname,
+      score: participant.latestScore,
+      placement: index + 1,
+    }));
+
+  standings.forEach((entry, index) => {
+    const participant = room.participants[entry.participantId];
+    if (!participant) {
+      return;
+    }
+
+    participant.roundsPlayed += 1;
+    participant.totalScore += entry.score;
+    participant.bestScore = Math.max(participant.bestScore, entry.score);
+
+    if (index === 0) {
+      participant.wins += 1;
+    }
+  });
+
+  room.phase = "results";
+  room.round.standings = standings;
+  room.round.endedAt = now();
+  room.history.unshift({
+    number: room.round.number,
+    startedAt: room.round.startAt,
+    endedAt: room.round.endedAt,
+    standings,
+  });
+
+  if (room.history.length > 12) {
+    room.history.pop();
+  }
+
+  const champion = standings[0];
+  if (champion) {
+    addEvent(room, `第 ${room.round.number} 回合結束，${champion.nickname} 奪冠`, "finish");
+  }
+}
+
+function refreshRoomLifecycle(room) {
+  assignHostIfNeeded(room);
+
+  if (room.phase === "countdown" && room.round.startAt && now() >= room.round.startAt) {
+    room.phase = "running";
+    addEvent(room, `第 ${room.round.number} 回合同步開跑`, "start");
+  }
+
+  if (room.phase === "running") {
+    const activeParticipants = getRoundParticipants(room);
+    const aliveParticipants = activeParticipants.filter((participant) => participant.isAlive);
+
+    if (activeParticipants.length === 0 || aliveParticipants.length === 0) {
+      finalizeRound(room);
+    }
+  }
 }
 
 function cleanupRooms() {
-  const staleThreshold = now() - 180_000;
+  const staleThreshold = now() - STALE_PLAYER_MS;
 
   for (const [roomId, room] of rooms.entries()) {
-    room.playerOrder = room.playerOrder.filter((playerId) => {
-      const player = room.players[playerId];
-      if (!player) {
+    room.participantOrder = room.participantOrder.filter((participantId) => {
+      const participant = room.participants[participantId];
+      if (!participant) {
         return false;
       }
 
-      if (player.lastSeenAt < staleThreshold) {
-        delete room.players[playerId];
-        addEvent(room, `${player.nickname} 離線，已移出房間`, "leave");
+      if (participant.lastSeenAt < staleThreshold) {
+        const wasAlive = participant.activeThisRound && participant.isAlive;
+        delete room.participants[participantId];
+        addEvent(room, `${participant.nickname} 已離線`, "leave");
+
+        if (wasAlive) {
+          refreshRoomLifecycle(room);
+        }
+
         return false;
       }
 
       return true;
     });
 
-    if (room.playerOrder.length === 0) {
+    assignHostIfNeeded(room);
+    refreshRoomLifecycle(room);
+
+    if (room.participantOrder.length === 0) {
       rooms.delete(roomId);
     }
   }
 }
 
-function startMatchIfReady(room) {
-  if (room.playerOrder.length !== 2) {
-    room.phase = "waiting";
-    room.winnerId = null;
+function participantSummary(participant, requesterId) {
+  return {
+    id: participant.id,
+    role: participant.role,
+    nickname: participant.nickname,
+    modelName: participant.modelName,
+    selectedLabel: participant.selectedLabel,
+    cameraReady: participant.cameraReady,
+    lobbyReady: participant.lobbyReady,
+    readyToRace: isPlayerReady(participant),
+    currentLabel: participant.currentLabel,
+    currentConfidence: participant.currentConfidence,
+    currentDistance: participant.currentDistance,
+    currentState: participant.currentState,
+    activeThisRound: participant.activeThisRound,
+    isAlive: participant.isAlive,
+    latestScore: participant.latestScore,
+    bestScore: participant.bestScore,
+    totalScore: participant.totalScore,
+    wins: participant.wins,
+    roundsPlayed: participant.roundsPlayed,
+    isRequester: participant.id === requesterId,
+    lastSeenAt: participant.lastSeenAt,
+  };
+}
+
+function roomSummary(room, requesterId) {
+  refreshRoomLifecycle(room);
+
+  const participants = room.participantOrder
+    .map((participantId) => room.participants[participantId])
+    .filter(Boolean)
+    .map((participant) => participantSummary(participant, requesterId));
+
+  const readyPlayers = participants.filter((participant) => participant.readyToRace).length;
+  const activePlayers = participants.filter((participant) => participant.activeThisRound);
+  const me = participants.find((participant) => participant.id === requesterId) || null;
+  const host = participants.find((participant) => participant.id === room.hostId) || null;
+
+  return {
+    id: room.id,
+    phase: room.phase,
+    hostId: room.hostId,
+    playerCount: participants.filter((participant) => participant.role === "player").length,
+    readyPlayerCount: readyPlayers,
+    me,
+    host,
+    participants,
+    round: {
+      number: room.round.number,
+      seed: room.round.seed,
+      startAt: room.round.startAt,
+      countdownMs: room.round.countdownMs,
+      activeParticipantIds: room.round.activeParticipantIds,
+      standings: room.round.standings,
+      endedAt: room.round.endedAt,
+      aliveCount: activePlayers.filter((participant) => participant.isAlive).length,
+    },
+    history: room.history,
+    events: room.events.slice(-12),
+    canStartRound: room.phase !== "countdown" && room.phase !== "running" && readyPlayers > 0,
+    serverTime: now(),
+  };
+}
+
+function updateParticipantPresence(participant, body) {
+  participant.nickname = sanitizeText(body.nickname, participant.nickname, 24);
+  participant.modelUrl = sanitizeText(body.modelUrl, participant.modelUrl, 200);
+  participant.modelName = sanitizeText(body.modelName, participant.modelName, 40);
+  participant.labels = Array.isArray(body.labels) ? body.labels.map((label) => sanitizeText(label, "", 40)).filter(Boolean) : participant.labels;
+  participant.selectedLabel = sanitizeText(body.selectedLabel, participant.selectedLabel, 40);
+  participant.cameraReady = Boolean(body.cameraReady);
+  participant.lobbyReady = Boolean(body.lobbyReady);
+  participant.currentLabel = sanitizeText(body.currentLabel, "", 40);
+  participant.currentConfidence = Number(body.currentConfidence || 0);
+  participant.lastSeenAt = now();
+}
+
+function updateRoundProgress(room, participant, body) {
+  if (!participant.activeThisRound || room.phase === "lobby" || room.phase === "results") {
     return;
   }
 
-  const players = room.playerOrder.map((id) => room.players[id]).filter(Boolean);
-  const allReady = players.every((player) => player.selectedLabel && player.modelUrl);
+  const reportedRoundNumber = Number(body.roundNumber || 0);
+  if (reportedRoundNumber !== room.round.number) {
+    return;
+  }
 
-  if (allReady && room.phase === "waiting") {
-    room.phase = "active";
-    room.winnerId = null;
-    players.forEach((player) => {
-      player.hp = 100;
-      player.attackCount = 0;
-      player.lastAttackAt = 0;
-    });
-    addEvent(room, "雙方已就緒，對戰開始", "start");
+  participant.currentDistance = Math.max(participant.currentDistance, Number(body.currentDistance || 0));
+  participant.latestScore = Math.max(participant.latestScore, Number(body.latestScore || 0), participant.currentDistance);
+  participant.currentState = sanitizeText(body.currentState, participant.currentState, 24);
+
+  if (body.reportDeath === true && participant.isAlive) {
+    participant.isAlive = false;
+    participant.eliminatedAt = now();
+    participant.currentState = "dead";
+    addEvent(room, `${participant.nickname} 在第 ${room.round.number} 回合淘汰，得分 ${participant.latestScore}`, "elimination");
   }
 }
 
-function handleAttack(room, attackerId) {
-  if (room.phase !== "active") {
-    return;
+function startRound(room, hostId) {
+  const host = room.participants[hostId];
+  if (!host || host.id !== room.hostId) {
+    throw new Error("Only the host can start a round");
   }
 
-  const attacker = room.players[attackerId];
-  if (!attacker) {
-    return;
+  const readyParticipants = room.participantOrder
+    .map((participantId) => room.participants[participantId])
+    .filter((participant) => participant && isPlayerReady(participant));
+
+  if (readyParticipants.length === 0) {
+    throw new Error("No ready players in the room");
   }
 
-  const opponentId = room.playerOrder.find((playerId) => playerId !== attackerId);
-  const opponent = opponentId ? room.players[opponentId] : null;
-  if (!opponent) {
-    return;
+  room.phase = "countdown";
+  room.round.number += 1;
+  room.round.seed = Math.floor(Math.random() * 1_000_000_000);
+  room.round.startAt = now() + COUNTDOWN_MS;
+  room.round.countdownMs = COUNTDOWN_MS;
+  room.round.activeParticipantIds = readyParticipants.map((participant) => participant.id);
+  room.round.standings = [];
+  room.round.endedAt = null;
+
+  room.participantOrder.forEach((participantId) => {
+    const participant = room.participants[participantId];
+    if (!participant) {
+      return;
+    }
+
+    participant.currentDistance = 0;
+    participant.currentState = participant.role === "host" ? "hosting" : "waiting";
+    participant.latestScore = 0;
+    participant.eliminatedAt = 0;
+    participant.activeThisRound = room.round.activeParticipantIds.includes(participant.id);
+    participant.isAlive = participant.activeThisRound;
+  });
+
+  addEvent(room, `主持人已啟動第 ${room.round.number} 回合，${readyParticipants.length} 位玩家準備出發`, "countdown");
+}
+
+function resetLeaderboard(room, hostId) {
+  const host = room.participants[hostId];
+  if (!host || host.id !== room.hostId) {
+    throw new Error("Only the host can reset the leaderboard");
   }
 
-  if (now() - attacker.lastAttackAt < 1200) {
-    return;
-  }
+  room.phase = "lobby";
+  room.history = [];
+  room.round = {
+    number: 0,
+    seed: null,
+    startAt: null,
+    countdownMs: COUNTDOWN_MS,
+    activeParticipantIds: [],
+    standings: [],
+    endedAt: null,
+  };
 
-  attacker.lastAttackAt = now();
-  attacker.attackCount += 1;
-  opponent.hp = Math.max(0, opponent.hp - 10);
-  addEvent(room, `${attacker.nickname} 成功使出 ${attacker.selectedLabel}，造成 10 點傷害`, "attack");
+  room.participantOrder.forEach((participantId) => {
+    const participant = room.participants[participantId];
+    if (!participant) {
+      return;
+    }
 
-  if (opponent.hp <= 0) {
-    room.phase = "finished";
-    room.winnerId = attacker.id;
-    addEvent(room, `${attacker.nickname} 獲勝`, "finish");
-  }
+    participant.currentDistance = 0;
+    participant.currentState = "idle";
+    participant.activeThisRound = false;
+    participant.isAlive = false;
+    participant.latestScore = 0;
+    participant.bestScore = 0;
+    participant.totalScore = 0;
+    participant.wins = 0;
+    participant.roundsPlayed = 0;
+    participant.eliminatedAt = 0;
+  });
+
+  addEvent(room, "主持人已重置整個賽季分數", "reset");
 }
 
 async function handleApi(req, res, pathname, searchParams) {
@@ -270,91 +515,65 @@ async function handleApi(req, res, pathname, searchParams) {
 
   if (req.method === "POST" && pathname === "/api/rooms/join") {
     const body = await readJson(req);
-    const roomId = String(body.roomId || "").trim();
-    const playerId = String(body.playerId || "").trim();
-    const nickname = String(body.nickname || "").trim();
+    const roomId = sanitizeText(body.roomId, "", 32);
+    const participantId = sanitizeText(body.participantId, "", 80);
+    const role = body.role === "host" ? "host" : "player";
 
-    if (!roomId || !playerId) {
-      sendJson(req, res, 400, { error: "roomId and playerId are required" });
+    if (!roomId || !participantId) {
+      sendJson(req, res, 400, { error: "roomId and participantId are required" });
       return true;
     }
 
     const room = ensureRoom(roomId);
-    const existing = room.players[playerId];
+    let participant = room.participants[participantId];
 
-    if (!existing && room.playerOrder.length >= 2) {
-      sendJson(req, res, 409, { error: "This room already has 2 players" });
-      return true;
-    }
-
-    if (!existing) {
-      room.players[playerId] = makePlayerState({ playerId, nickname });
-      room.playerOrder.push(playerId);
-      addEvent(room, `${nickname || "Player"} 進入房間`, "join");
+    if (!participant) {
+      participant = createParticipant({
+        participantId,
+        nickname: body.nickname,
+        role,
+      });
+      room.participants[participantId] = participant;
+      room.participantOrder.push(participantId);
+      addEvent(room, `${participant.nickname}${participant.role === "host" ? " 以主持人身份" : ""}加入房間`, "join");
     } else {
-      existing.nickname = nickname || existing.nickname;
-      existing.lastSeenAt = now();
+      participant.role = role;
+      participant.nickname = sanitizeText(body.nickname, participant.nickname, 24);
+      participant.lastSeenAt = now();
     }
 
-    startMatchIfReady(room);
-    sendJson(req, res, 200, { ok: true, room: roomSummary(room, playerId) });
+    if (!room.hostId || role === "host") {
+      room.hostId = participantId;
+    }
+
+    sendJson(req, res, 200, { ok: true, room: roomSummary(room, participantId) });
     return true;
   }
 
   if (req.method === "POST" && pathname === "/api/rooms/update") {
     const body = await readJson(req);
-    const roomId = String(body.roomId || "").trim();
-    const playerId = String(body.playerId || "").trim();
-
-    if (!roomId || !playerId) {
-      sendJson(req, res, 400, { error: "roomId and playerId are required" });
-      return true;
-    }
-
+    const roomId = sanitizeText(body.roomId, "", 32);
+    const participantId = sanitizeText(body.participantId, "", 80);
     const room = rooms.get(roomId);
-    const player = room && room.players[playerId];
-    if (!room || !player) {
-      sendJson(req, res, 404, { error: "Room or player not found" });
+    const participant = room && room.participants[participantId];
+
+    if (!room || !participant) {
+      sendJson(req, res, 404, { error: "Room or participant not found" });
       return true;
     }
 
-    player.nickname = String(body.nickname || player.nickname).trim() || player.nickname;
-    player.modelUrl = String(body.modelUrl || player.modelUrl).trim();
-    player.modelName = String(body.modelName || player.modelName).trim();
-    player.labels = Array.isArray(body.labels) ? body.labels.map(String) : player.labels;
-    player.selectedLabel = String(body.selectedLabel || player.selectedLabel).trim();
-    player.currentLabel = String(body.currentLabel || "").trim();
-    player.currentConfidence = Number(body.currentConfidence || 0);
-    player.lastSeenAt = now();
+    updateParticipantPresence(participant, body);
+    updateRoundProgress(room, participant, body);
+    refreshRoomLifecycle(room);
 
-    startMatchIfReady(room);
-
-    if (body.resetBattle) {
-      room.phase = "waiting";
-      room.winnerId = null;
-      room.playerOrder.forEach((id) => {
-        const member = room.players[id];
-        if (member) {
-          member.hp = 100;
-          member.attackCount = 0;
-          member.lastAttackAt = 0;
-        }
-      });
-      addEvent(room, `${player.nickname} 已重置對戰`, "reset");
-      startMatchIfReady(room);
-    }
-
-    if (body.attackPulse === true) {
-      handleAttack(room, playerId);
-    }
-
-    sendJson(req, res, 200, { ok: true, room: roomSummary(room, playerId) });
+    sendJson(req, res, 200, { ok: true, room: roomSummary(room, participantId) });
     return true;
   }
 
-  if (req.method === "GET" && pathname === "/api/rooms/state") {
-    const roomId = String(searchParams.get("roomId") || "").trim();
-    const playerId = String(searchParams.get("playerId") || "").trim();
+  if (req.method === "POST" && pathname === "/api/rooms/host/start-round") {
+    const body = await readJson(req);
+    const roomId = sanitizeText(body.roomId, "", 32);
+    const participantId = sanitizeText(body.participantId, "", 80);
     const room = rooms.get(roomId);
 
     if (!room) {
@@ -362,7 +581,46 @@ async function handleApi(req, res, pathname, searchParams) {
       return true;
     }
 
-    sendJson(req, res, 200, { ok: true, room: roomSummary(room, playerId) });
+    try {
+      startRound(room, participantId);
+      sendJson(req, res, 200, { ok: true, room: roomSummary(room, participantId) });
+    } catch (error) {
+      sendJson(req, res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && pathname === "/api/rooms/host/reset-leaderboard") {
+    const body = await readJson(req);
+    const roomId = sanitizeText(body.roomId, "", 32);
+    const participantId = sanitizeText(body.participantId, "", 80);
+    const room = rooms.get(roomId);
+
+    if (!room) {
+      sendJson(req, res, 404, { error: "Room not found" });
+      return true;
+    }
+
+    try {
+      resetLeaderboard(room, participantId);
+      sendJson(req, res, 200, { ok: true, room: roomSummary(room, participantId) });
+    } catch (error) {
+      sendJson(req, res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/api/rooms/state") {
+    const roomId = sanitizeText(searchParams.get("roomId"), "", 32);
+    const participantId = sanitizeText(searchParams.get("participantId"), "", 80);
+    const room = rooms.get(roomId);
+
+    if (!room) {
+      sendJson(req, res, 404, { error: "Room not found" });
+      return true;
+    }
+
+    sendJson(req, res, 200, { ok: true, room: roomSummary(room, participantId) });
     return true;
   }
 
@@ -402,6 +660,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const requestUrl = new URL(req.url, `http://${req.headers.host}`);
     const handled = await handleApi(req, res, requestUrl.pathname, requestUrl.searchParams);
+
     if (!handled) {
       serveStatic(req, res, requestUrl.pathname);
     }

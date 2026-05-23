@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Teachable Machine Pose Battle</title>
+    <title>Pose Dino Party</title>
     <link rel="stylesheet" href="./style.css" />
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/pose@0.8/dist/teachablemachine-pose.min.js"></script>
@@ -12,108 +12,191 @@
   <body>
     <main class="app-shell">
       <section class="hero">
-        <p class="eyebrow">Google Teachable Machine Pose Battle</p>
-        <h1>兩位學員各自載入自己的 Pose 模型後，即可進房連線對戰</h1>
+        <p class="eyebrow">Pose Dino Party</p>
+        <h1>主持人同步開局，所有玩家用自己的 Pose 模型操作小恐龍衝刺</h1>
         <p class="hero-copy">
-          每位學員輸入自己的模型網址、選擇攻擊姿勢，進入相同房間號碼後就能同步對戰。
-          這個版本採用瀏覽器鏡頭偵測姿勢，達到指定信心值時會對對手造成傷害。
+          玩家完成模型載入與鏡頭測試後進入等待房間，主持人從後台一鍵啟動回合。每個人都會在自己的畫面裡跑同一套障礙賽道，碰撞後淘汰，最後自動彙整成績與累積排行榜。
         </p>
       </section>
 
-      <section class="panel control-panel">
-        <div class="form-grid">
+      <section class="panel setup-panel">
+        <div class="setup-grid">
           <label>
-            <span>玩家暱稱</span>
-            <input id="nicknameInput" type="text" placeholder="例如：學生 A" maxlength="20" />
+            <span>身份</span>
+            <select id="roleSelect">
+              <option value="player">玩家</option>
+              <option value="host">主持人</option>
+            </select>
+          </label>
+          <label>
+            <span>暱稱</span>
+            <input id="nicknameInput" type="text" placeholder="例如：第 3 組小明" maxlength="24" />
           </label>
           <label>
             <span>房間號碼</span>
-            <input id="roomInput" type="text" placeholder="例如：A101" maxlength="20" />
+            <input id="roomInput" type="text" placeholder="例如：camp-2026" maxlength="32" />
           </label>
-          <label class="full-span">
+          <label class="player-only">
+            <span>跳躍姿勢門檻</span>
+            <input id="thresholdInput" type="range" min="0.6" max="0.98" step="0.01" value="0.86" />
+            <strong id="thresholdValue">0.86</strong>
+          </label>
+          <label class="full-span player-only">
             <span>Teachable Machine 模型 URL</span>
             <input
               id="modelUrlInput"
               type="url"
-              placeholder="貼上模型資料夾網址，例如 https://teachablemachine.withgoogle.com/models/xxxxx/"
+              placeholder="貼上匯出後模型資料夾網址，例如 https://teachablemachine.withgoogle.com/models/xxxxx/"
             />
           </label>
-          <label>
-            <span>攻擊姿勢標籤</span>
+          <label class="player-only">
+            <span>跳躍姿勢標籤</span>
             <select id="labelSelect" disabled>
               <option value="">請先載入模型</option>
             </select>
           </label>
-          <label>
-            <span>攻擊信心門檻</span>
-            <input id="thresholdInput" type="range" min="0.6" max="0.98" step="0.01" value="0.9" />
-            <strong id="thresholdValue">0.90</strong>
+          <label class="player-only">
+            <span>鏡頭測試狀態</span>
+            <div class="inline-metric">
+              <strong id="cameraReadyText">未啟動</strong>
+              <span id="apiBaseUrlText">API 自動判定</span>
+            </div>
           </label>
         </div>
 
         <div class="actions">
-          <button id="loadModelButton">1. 載入模型</button>
-          <button id="cameraButton" disabled>2. 啟動鏡頭</button>
-          <button id="joinRoomButton" disabled>3. 進入房間</button>
-          <button id="resetButton" disabled>重置對戰</button>
+          <button id="loadModelButton" class="player-only">1. 載入模型</button>
+          <button id="cameraButton" class="player-only" disabled>2. 測試鏡頭</button>
+          <button id="joinRoomButton">3. 進入等待房間</button>
+          <button id="leaveHintButton" class="ghost-button" disabled>房間同步中</button>
         </div>
 
         <p class="hint">
-          模型 URL 需指向匯出的模型資料夾，系統會自動去抓 `model.json` 與 `metadata.json`。
+          玩家流程：設定暱稱與房間、載入模型、測試鏡頭、選擇跳躍姿勢、加入等待室。主持人可直接加入房間並控制回合。
         </p>
-        <p class="hint">後端 API：<span id="apiBaseUrlText">自動判定</span></p>
-        <p id="statusText" class="status">尚未載入模型</p>
+        <p id="statusText" class="status">請先完成身份與房間設定</p>
       </section>
 
-      <section class="battle-layout">
+      <section class="workspace">
         <article class="panel stage-panel">
-          <div class="video-frame">
-            <canvas id="canvas"></canvas>
+          <div class="stage-header">
+            <div>
+              <p class="label">房間</p>
+              <h2 id="roomStatusText">未加入</h2>
+            </div>
+            <div>
+              <p class="label">階段</p>
+              <h2 id="phaseText">報到中</h2>
+            </div>
+            <div>
+              <p class="label">回合</p>
+              <h2 id="roundText">0</h2>
+            </div>
           </div>
-          <div class="pose-readout">
-            <p>目前辨識姿勢：<strong id="currentPoseText">尚未開始</strong></p>
-            <p>姿勢信心值：<strong id="currentConfidenceText">0.00</strong></p>
+
+          <div id="countdownBanner" class="countdown-banner">等待主持人開始</div>
+
+          <div class="stage-grid">
+            <section class="card">
+              <div class="card-header">
+                <p class="label">鏡頭偵測</p>
+                <p id="currentPoseChip" class="pill">未啟動</p>
+              </div>
+              <canvas id="cameraCanvas" width="480" height="360"></canvas>
+              <div class="metric-grid">
+                <div>
+                  <p class="metric-label">目前姿勢</p>
+                  <strong id="currentPoseText">尚未開始</strong>
+                </div>
+                <div>
+                  <p class="metric-label">信心值</p>
+                  <strong id="currentConfidenceText">0.00</strong>
+                </div>
+                <div>
+                  <p class="metric-label">跳躍姿勢</p>
+                  <strong id="selectedPoseText">-</strong>
+                </div>
+                <div>
+                  <p class="metric-label">回合狀態</p>
+                  <strong id="playerStateText">待命</strong>
+                </div>
+              </div>
+            </section>
+
+            <section class="card">
+              <div class="card-header">
+                <p class="label">我的小恐龍賽道</p>
+                <p id="gameStatusText" class="pill">等待開局</p>
+              </div>
+              <canvas id="gameCanvas" width="820" height="280"></canvas>
+              <div class="metric-grid">
+                <div>
+                  <p class="metric-label">本回合分數</p>
+                  <strong id="myScoreText">0</strong>
+                </div>
+                <div>
+                  <p class="metric-label">最佳分數</p>
+                  <strong id="bestScoreText">0</strong>
+                </div>
+                <div>
+                  <p class="metric-label">累積總分</p>
+                  <strong id="totalScoreText">0</strong>
+                </div>
+                <div>
+                  <p class="metric-label">獲勝次數</p>
+                  <strong id="winsText">0</strong>
+                </div>
+              </div>
+            </section>
           </div>
         </article>
 
-        <article class="panel scoreboard-panel">
-          <div class="battle-header">
-            <div>
-              <p class="label">房間</p>
-              <h2 id="roomStatusText">未連線</h2>
+        <aside class="sidebar">
+          <section id="hostPanel" class="panel host-panel hidden">
+            <div class="host-header">
+              <div>
+                <p class="label">主持人後台</p>
+                <h3>控制下一回合</h3>
+              </div>
+              <div class="host-actions">
+                <button id="startRoundButton">啟動回合</button>
+                <button id="resetLeaderboardButton" class="ghost-button">重置排行榜</button>
+              </div>
             </div>
-            <div>
-              <p class="label">狀態</p>
-              <h2 id="phaseText">等待中</h2>
+            <p id="hostSummaryText" class="host-summary">等待玩家報到</p>
+          </section>
+
+          <section class="panel scoreboard-panel">
+            <div class="section-head">
+              <div>
+                <p class="label">等待室與成績</p>
+                <h3>所有玩家狀態</h3>
+              </div>
+              <p id="winnerText" class="winner-text">尚未產生本回合冠軍</p>
             </div>
-          </div>
+            <div id="leaderboardList" class="leaderboard-list"></div>
+          </section>
 
-          <div class="players">
-            <section class="player-card me">
-              <p class="label">我方</p>
-              <h3 id="meName">未加入</h3>
-              <div class="hp-bar"><span id="meHpBar"></span></div>
-              <p id="meHpText">HP 100</p>
-              <p id="meSkillText">攻擊姿勢：-</p>
-            </section>
+          <section class="panel history-panel">
+            <div class="section-head">
+              <div>
+                <p class="label">回合紀錄</p>
+                <h3>主持人頒獎資料</h3>
+              </div>
+            </div>
+            <div id="historyList" class="history-list"></div>
+          </section>
 
-            <section class="player-card opponent">
-              <p class="label">對手</p>
-              <h3 id="opponentName">等待對手加入</h3>
-              <div class="hp-bar"><span id="opponentHpBar"></span></div>
-              <p id="opponentHpText">HP 100</p>
-              <p id="opponentSkillText">攻擊姿勢：-</p>
-            </section>
-          </div>
-
-          <section class="event-log-wrap">
-            <div class="event-log-header">
-              <p class="label">對戰紀錄</p>
-              <p id="winnerText">尚未分出勝負</p>
+          <section class="panel event-panel">
+            <div class="section-head">
+              <div>
+                <p class="label">房間事件</p>
+                <h3>同步訊息</h3>
+              </div>
             </div>
             <ul id="eventLog" class="event-log"></ul>
           </section>
-        </article>
+        </aside>
       </section>
     </main>
 

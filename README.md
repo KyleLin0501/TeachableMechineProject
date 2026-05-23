@@ -1,17 +1,18 @@
-# Teachable Machine Pose Battle Demo
+# Pose Dino Party
 
-這個版本已調整成前後端分離部署：
+這個專案是一個多人連線的 Teachable Machine Pose 小恐龍遊戲：
 
-- 前端：GitHub Pages
-- 後端 API：Render
+- 玩家：設定暱稱、選房間、載入自己的 Pose 模型、測試鏡頭、選定跳躍姿勢後加入等待室
+- 主持人：加入同一個房間後，從後台同步啟動回合、查看所有玩家結果、進行頒獎
+- 每回合：所有玩家在各自視窗內跑同一套障礙賽道，碰撞即淘汰
+- 多回合：保留最佳分數、累積總分、冠軍次數與歷史回合成績
 
-學員可以：
+## 技術架構
 
-- 各自貼上自己的 Google Teachable Machine Pose 模型 URL
-- 選擇自己的攻擊姿勢標籤
-- 輸入相同房間號碼後加入同一場對戰
-- 透過瀏覽器鏡頭做姿勢辨識
-- 當攻擊姿勢達到門檻時對對手造成傷害
+- 前端：GitHub Pages 靜態站
+- 後端：Render Web Service
+- Pose 推論：在玩家瀏覽器端執行
+- 房間與回合同步：Node.js 記憶體 API
 
 ## 本地開發
 
@@ -19,88 +20,72 @@
 npm start
 ```
 
-啟動後開啟：
+打開：
 
 ```text
 http://127.0.0.1:3000
 ```
 
-本地模式下，前端會直接使用同源 API。
+## GitHub Pages 產出
 
-## GitHub Pages 前端產出
-
-先設定 Render API 網址，再產出 `docs/`：
+先把 Render API 網址帶入，再產出 `docs/`：
 
 ```bash
 PUBLIC_API_BASE_URL=https://your-render-service.onrender.com npm run build:pages
 ```
 
-執行後會：
+產出後：
 
-- 把 `public/` 複製到 `docs/`
-- 自動產生 `docs/config.js`
-- 自動建立 `docs/.nojekyll`
+- `docs/index.html`
+- `docs/app.js`
+- `docs/style.css`
+- `docs/config.js`
 
-之後把整個專案推上 GitHub，並在 GitHub Pages 設定：
+會直接作為 GitHub Pages 內容。
 
-- Source: `Deploy from a branch`
-- Branch: 你的分支
-- Folder: `/docs`
+## Render 後端設定
 
-## Render 後端部署
+專案根目錄包含 [render.yaml](/Users/linkaiyu/Documents/Web/TeachableMechineProject/render.yaml)。
 
-專案已附上 [render.yaml](/Users/linkaiyu/Documents/Web/TeachableMechineProject/render.yaml)。
-
-在 Render 建立 Web Service 時：
-
-1. 連接這個 GitHub repo
-2. Render 會讀到 `render.yaml`
-3. 設定環境變數 `ALLOWED_ORIGINS`
-
-範例：
+必要環境變數：
 
 ```text
-ALLOWED_ORIGINS=https://your-name.github.io
+ALLOWED_ORIGINS=https://yourname.github.io
 ```
 
-如果你是 GitHub 專案頁面而不是使用者首頁，通常也還是同一個 origin，例如：
+如果你的 GitHub Pages 網址是：
 
 ```text
-https://your-name.github.io
+https://yourname.github.io/TeachableMechineProject/
 ```
 
-注意這裡填的是 origin，不要加路徑尾巴。
-
-## 模型 URL 格式
-
-請輸入匯出的模型資料夾 URL，例如：
+`ALLOWED_ORIGINS` 仍然填：
 
 ```text
-https://teachablemachine.withgoogle.com/models/your-model-id/
+https://yourname.github.io
 ```
 
-系統會自動讀取：
+## 玩家流程
 
-- `model.json`
-- `metadata.json`
+1. 選擇 `玩家`
+2. 輸入暱稱與房間號碼
+3. 貼上 Teachable Machine Pose 模型 URL
+4. 載入模型
+5. 啟動鏡頭並測試
+6. 選好跳躍姿勢
+7. 進入等待房間
 
-## 對戰規則
+## 主持人流程
 
-- 每位玩家初始 HP 為 100
-- 雙方都成功加入房間並選定攻擊姿勢後，自動開始對戰
-- 當玩家做出自己選定的姿勢，且信心值高於門檻時，會觸發一次攻擊
-- 每次攻擊造成 10 點傷害
-- 為避免連續誤判，每位玩家有 1.2 秒攻擊冷卻
+1. 選擇 `主持人`
+2. 輸入暱稱與房間號碼
+3. 加入主持後台
+4. 等待玩家就緒
+5. 按下 `啟動回合`
+6. 回合結束後查看排行榜與歷史紀錄
 
-## 重要限制
+## 目前限制
 
-- 目前房間資料仍存在記憶體中
-- Render 免費方案休眠後，第一位使用者可能要等幾秒喚醒服務
-- 伺服器重啟後，既有房間資料會清空
-
-## 部署後檢查
-
-部署後請確認兩件事：
-
-1. GitHub Pages 的 `config.js` 裡 API 網址是你的 Render 網址
-2. Render 的 `ALLOWED_ORIGINS` 有填入你的 GitHub Pages origin
+- 房間狀態目前存在記憶體中，Render 重啟後會清空
+- Render Free 方案可能會休眠，第一位使用者需要等待喚醒
+- 主持人與玩家角色建議分開用不同瀏覽器視窗或不同裝置操作

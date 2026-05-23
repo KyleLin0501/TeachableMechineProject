@@ -295,6 +295,7 @@ async function runPosePrediction() {
 
   try {
     state.webcam.update();
+    drawRawCameraFrame();
     const { pose, posenetOutput } = await state.model.estimatePose(state.webcam.canvas);
     const predictions = await state.model.predict(posenetOutput);
     const bestPrediction = predictions.reduce((top, item) => {
@@ -312,8 +313,22 @@ async function runPosePrediction() {
     applyPoseCommand();
   } catch (error) {
     console.error(error);
+    drawRawCameraFrame();
+    if (state.cameraReady) {
+      els.currentPoseChip.textContent = "鏡頭已啟動";
+      setStatus(`鏡頭有啟動，但姿勢辨識失敗：${error.message}`);
+    }
     refreshCameraIndicators();
   }
+}
+
+function drawRawCameraFrame() {
+  if (!state.webcam || !state.webcam.canvas) {
+    return;
+  }
+
+  cameraCtx.clearRect(0, 0, els.cameraCanvas.width, els.cameraCanvas.height);
+  cameraCtx.drawImage(state.webcam.canvas, 0, 0, els.cameraCanvas.width, els.cameraCanvas.height);
 }
 
 function drawCamera(pose) {
@@ -322,8 +337,7 @@ function drawCamera(pose) {
     return;
   }
 
-  cameraCtx.clearRect(0, 0, els.cameraCanvas.width, els.cameraCanvas.height);
-  cameraCtx.drawImage(state.webcam.canvas, 0, 0, els.cameraCanvas.width, els.cameraCanvas.height);
+  drawRawCameraFrame();
 
   if (pose) {
     tmPose.drawKeypoints(pose.keypoints, 0.45, cameraCtx);

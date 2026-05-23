@@ -1,7 +1,8 @@
 const PLAYER_STORAGE_KEY = "pose_dino_party_participant_id";
+const fallbackParticipantId = crypto.randomUUID();
 
 const state = {
-  participantId: localStorage.getItem(PLAYER_STORAGE_KEY) || crypto.randomUUID(),
+  participantId: sessionStorage.getItem(PLAYER_STORAGE_KEY) || fallbackParticipantId,
   apiBaseUrl: resolveApiBaseUrl(),
   role: "player",
   nickname: "",
@@ -13,6 +14,7 @@ const state = {
   maxPredictions: 0,
   labels: [],
   selectedLabel: "",
+  actionLabels: null,
   threshold: 0.86,
   cameraReady: false,
   joined: false,
@@ -28,14 +30,13 @@ const state = {
   localGame: createLocalGameState(),
 };
 
-localStorage.setItem(PLAYER_STORAGE_KEY, state.participantId);
+sessionStorage.setItem(PLAYER_STORAGE_KEY, state.participantId);
 
 const els = {
   roleSelect: document.getElementById("roleSelect"),
   nicknameInput: document.getElementById("nicknameInput"),
   roomInput: document.getElementById("roomInput"),
   modelUrlInput: document.getElementById("modelUrlInput"),
-  labelSelect: document.getElementById("labelSelect"),
   thresholdInput: document.getElementById("thresholdInput"),
   thresholdValue: document.getElementById("thresholdValue"),
   loadModelButton: document.getElementById("loadModelButton"),
@@ -54,7 +55,6 @@ const els = {
   currentConfidenceText: document.getElementById("currentConfidenceText"),
   selectedPoseText: document.getElementById("selectedPoseText"),
   playerStateText: document.getElementById("playerStateText"),
-  gameStatusText: document.getElementById("gameStatusText"),
   myScoreText: document.getElementById("myScoreText"),
   bestScoreText: document.getElementById("bestScoreText"),
   totalScoreText: document.getElementById("totalScoreText"),
@@ -84,16 +84,19 @@ function createLocalGameState() {
     reportedDeath: false,
     obstacles: [],
     dino: {
-      x: 92,
+      x: 180,
       y: 0,
       vy: 0,
-      width: 42,
-      height: 46,
+      standingWidth: 82,
+      standingHeight: 92,
+      crouchWidth: 108,
+      crouchHeight: 58,
+      isCrouching: false,
     },
     physics: {
-      jumpVelocity: 540,
-      gravity: 1450,
-      groundY: 230,
+      jumpVelocity: 980,
+      gravity: 2500,
+      groundY: 590,
     },
   };
 }
@@ -128,6 +131,23 @@ function normalizeModelBaseUrl(rawUrl) {
   return trimmed.endsWith("/") ? trimmed : `${trimmed}/`;
 }
 
+function normalizeActionLabel(label) {
+  return String(label || "").trim().toLowerCase();
+}
+
+function resolveActionLabels(labels) {
+  const byNormalizedLabel = new Map(labels.map((label) => [normalizeActionLabel(label), label]));
+  const jump = byNormalizedLabel.get("jump");
+  const stay = byNormalizedLabel.get("stay");
+  const down = byNormalizedLabel.get("down");
+
+  if (!jump || !stay || !down) {
+    throw new Error("模型必須包含 Jump、stay、down 三個類別標籤");
+  }
+
+  return { jump, stay, down };
+}
+
 function updateThreshold() {
   state.threshold = Number(els.thresholdInput.value);
   els.thresholdValue.textContent = state.threshold.toFixed(2);
@@ -139,41 +159,18 @@ function updateRoleUI() {
   els.joinRoomButton.textContent = state.role === "host" ? "加入主持後台" : "3. 進入等待房間";
   els.cameraReadyText.textContent = state.role === "host" ? "主持人無需鏡頭" : state.cameraReady ? "鏡頭測試完成" : "未啟動";
   refreshActionButtons();
+  syncPresentationMode();
   renderCameraPlaceholder();
 }
 
 function refreshActionButtons() {
   const hasRoomFields = Boolean(els.nicknameInput.value.trim() && els.roomInput.value.trim());
-  const playerReady = Boolean(state.model && state.cameraReady && state.selectedLabel);
+  const playerReady = Boolean(state.model && state.cameraReady && state.actionLabels);
 
   els.loadModelButton.disabled = state.role === "host";
   els.cameraButton.disabled = state.role === "host" || !state.model;
   els.joinRoomButton.disabled = state.role === "host" ? !hasRoomFields : !(hasRoomFields && playerReady);
   els.leaveHintButton.disabled = !state.joined;
-}
-
-function populateLabels(labels) {
-  els.labelSelect.innerHTML = "";
-
-  if (!labels.length) {
-    els.labelSelect.innerHTML = '<option value="">沒有找到標籤</option>';
-    els.labelSelect.disabled = true;
-    return;
-  }
-
-  labels.forEach((label, index) => {
-    const option = document.createElement("option");
-    option.value = label;
-    option.textContent = label;
-    if (index === 0) {
-      option.selected = true;
-      state.selectedLabel = label;
-    }
-    els.labelSelect.appendChild(option);
-  });
-
-  els.labelSelect.disabled = false;
-  els.selectedPoseText.textContent = state.selectedLabel || "-";
 }
 
 async function api(path, options = {}) {
@@ -205,11 +202,13 @@ async function loadModel() {
     state.modelUrl = baseUrl;
     state.maxPredictions = model.getTotalClasses();
     state.labels = Array.from({ length: state.maxPredictions }, (_, index) => model.getClassLabels()[index]);
+    state.actionLabels = resolveActionLabels(state.labels);
+    state.selectedLabel = `${state.actionLabels.jump} / ${state.actionLabels.stay} / ${state.actionLabels.down}`;
     state.modelName = new URL(baseUrl).pathname.split("/").filter(Boolean).pop() || "Pose Model";
 
-    populateLabels(state.labels);
+    els.selectedPoseText.textContent = state.selectedLabel;
     refreshActionButtons();
-    setStatus(`模型載入完成，共 ${state.labels.length} 個標籤`);
+    setStatus(`模型載入完成，已偵測到 ${state.selectedLabel}`);
   } catch (error) {
     console.error(error);
     setStatus(`模型載入失敗：${error.message}`);
@@ -292,7 +291,7 @@ async function runPosePrediction() {
   els.currentPoseChip.textContent = state.currentPose || "辨識中";
 
   drawCamera(pose);
-  maybeTriggerJump();
+  applyPoseCommand();
 }
 
 function drawCamera(pose) {
@@ -322,27 +321,46 @@ function renderCameraPlaceholder() {
   cameraCtx.fillText(
     state.role === "host"
       ? "這個視窗保留給主持後台，玩家請在另一個瀏覽器視窗加入房間。"
-      : "完成模型載入與鏡頭測試後，就能進入等待房間。",
+      : "模型需有 Jump / stay / down，完成鏡頭測試後即可進房。",
     28,
     74
   );
 }
 
-function maybeTriggerJump() {
-  if (state.role !== "player" || !state.joined) {
+function getPoseCommand() {
+  if (!state.actionLabels || state.currentConfidence < state.threshold) {
+    return "stay";
+  }
+
+  if (state.currentPose === state.actionLabels.jump) {
+    return "jump";
+  }
+  if (state.currentPose === state.actionLabels.down) {
+    return "down";
+  }
+  if (state.currentPose === state.actionLabels.stay) {
+    return "stay";
+  }
+
+  return "stay";
+}
+
+function applyPoseCommand() {
+  if (state.role !== "player" || !state.joined || !state.actionLabels) {
     return;
   }
 
   const game = state.localGame;
-  const isJumpPose =
-    state.currentPose === state.selectedLabel &&
-    state.currentConfidence >= state.threshold &&
-    game.status === "running";
+  const dino = game.dino;
+  const command = getPoseCommand();
 
-  if (isJumpPose && !state.poseArmed) {
+  dino.isCrouching = command === "down" && game.status === "running" && dino.y === 0;
+
+  if (command === "jump" && !state.poseArmed && game.status === "running") {
     state.poseArmed = true;
+    dino.isCrouching = false;
     triggerJump();
-  } else if (!isJumpPose) {
+  } else if (command !== "jump") {
     state.poseArmed = false;
   }
 }
@@ -374,17 +392,17 @@ function seededRandom(seed) {
 function createObstacleTimeline(seed) {
   const random = seededRandom(seed);
   const obstacles = [];
-  let spawnAt = 1400;
+  let spawnAt = 1800;
 
   while (spawnAt < 95_000) {
-    const width = 18 + Math.floor(random() * 22);
-    const height = 28 + Math.floor(random() * 52);
+    const width = 28 + Math.floor(random() * 34);
+    const height = 52 + Math.floor(random() * 88);
     obstacles.push({
       spawnAt,
       width,
       height,
     });
-    spawnAt += 1150 + Math.floor(random() * 1400);
+    spawnAt += 1280 + Math.floor(random() * 1480);
   }
 
   return obstacles;
@@ -413,6 +431,25 @@ function getMyParticipant() {
   return state.latestRoom ? state.latestRoom.me : null;
 }
 
+function shouldUseFocusMode() {
+  const room = state.latestRoom;
+  const me = getMyParticipant();
+  if (!room || !me || state.role !== "player") {
+    return false;
+  }
+
+  return (
+    me.activeThisRound &&
+    me.isAlive &&
+    (room.phase === "countdown" || room.phase === "running") &&
+    state.localGame.status !== "dead"
+  );
+}
+
+function syncPresentationMode() {
+  document.body.classList.toggle("focus-mode", shouldUseFocusMode());
+}
+
 function isMeActiveInCurrentRound() {
   const me = getMyParticipant();
   const room = state.latestRoom;
@@ -424,6 +461,7 @@ function updateLocalGame(deltaMs) {
   const me = getMyParticipant();
 
   if (!room || !me || state.role !== "player") {
+    syncPresentationMode();
     drawIdleGame("主持人可從右側後台啟動回合");
     return;
   }
@@ -432,13 +470,14 @@ function updateLocalGame(deltaMs) {
 
   if (!isMeActiveInCurrentRound()) {
     state.localGame.status = "idle";
+    syncPresentationMode();
     drawIdleGame("等待主持人將你納入下一回合");
     return;
   }
 
   if (room.phase === "countdown") {
     state.localGame.status = "countdown";
-    drawIdleGame("倒數中，準備起跑");
+    syncPresentationMode();
     return;
   }
 
@@ -446,11 +485,13 @@ function updateLocalGame(deltaMs) {
     if (state.localGame.status !== "dead") {
       state.localGame.status = "results";
     }
+    syncPresentationMode();
     return;
   }
 
   if (room.phase !== "running") {
     state.localGame.status = "idle";
+    syncPresentationMode();
     return;
   }
 
@@ -459,8 +500,11 @@ function updateLocalGame(deltaMs) {
   }
 
   if (state.localGame.status !== "running") {
+    syncPresentationMode();
     return;
   }
+
+  syncPresentationMode();
 
   const elapsedMs = Math.max(0, getServerNow() - state.localGame.startAt);
   const dt = Math.min(deltaMs, 32) / 1000;
@@ -502,16 +546,18 @@ function detectCollision(elapsedMs) {
 
 function getDinoRect() {
   const { dino, physics } = state.localGame;
+  const width = dino.isCrouching ? dino.crouchWidth : dino.standingWidth;
+  const height = dino.isCrouching ? dino.crouchHeight : dino.standingHeight;
   return {
     x: dino.x,
-    y: physics.groundY - dino.height - dino.y,
-    width: dino.width,
-    height: dino.height,
+    y: physics.groundY - height - dino.y,
+    width,
+    height,
   };
 }
 
 function getObstacleRect(obstacle, elapsedMs) {
-  const speed = 300;
+  const speed = 540;
   const timeSinceSpawn = elapsedMs - obstacle.spawnAt;
 
   if (timeSinceSpawn < -1000) {
@@ -539,6 +585,7 @@ function handleLocalDeath() {
   state.localGame.status = "dead";
   state.localGame.reportedDeath = true;
   state.poseArmed = false;
+  syncPresentationMode();
 
   syncPresence(true).catch((error) => {
     console.error(error);
@@ -552,11 +599,11 @@ function drawIdleGame(message) {
   drawGround();
 
   gameCtx.fillStyle = "#1c3556";
-  gameCtx.font = "700 28px Avenir Next";
-  gameCtx.fillText("Pose Dino Party", 36, 56);
+  gameCtx.font = "700 56px Avenir Next";
+  gameCtx.fillText("Pose Dino Party", 56, 94);
   gameCtx.fillStyle = "#64748b";
-  gameCtx.font = "18px Avenir Next";
-  gameCtx.fillText(message, 36, 88);
+  gameCtx.font = "30px Avenir Next";
+  gameCtx.fillText(message, 56, 144);
 }
 
 function drawGround() {
@@ -588,7 +635,8 @@ function renderGame() {
   drawDino();
 
   if (game.status === "countdown") {
-    drawOverlay("準備起跑", "主持人已同步倒數");
+    const remainingMs = Math.max(0, game.startAt - getServerNow());
+    drawOverlay("準備起跑", `${Math.max(1, Math.ceil(remainingMs / 1000))}`);
   } else if (game.status === "dead") {
     drawOverlay("本回合淘汰", `你的分數 ${game.score}`);
   } else if (room.phase === "results") {
@@ -601,9 +649,9 @@ function renderGame() {
 function drawClouds() {
   gameCtx.fillStyle = "rgba(255,255,255,0.85)";
   [
-    [110, 62, 28],
-    [310, 36, 20],
-    [640, 54, 26],
+    [180, 110, 46],
+    [520, 72, 34],
+    [920, 96, 42],
   ].forEach(([x, y, size]) => {
     gameCtx.beginPath();
     gameCtx.arc(x, y, size, 0, Math.PI * 2);
@@ -622,31 +670,42 @@ function drawObstacles(elapsedMs) {
     }
 
     gameCtx.fillRect(rect.x, rect.y, rect.width, rect.height);
-    gameCtx.fillRect(rect.x + rect.width * 0.38, rect.y - rect.height * 0.42, 8, rect.height * 0.42);
+    gameCtx.fillRect(rect.x + rect.width * 0.38, rect.y - rect.height * 0.42, 12, rect.height * 0.42);
   });
 }
 
 function drawDino() {
   const rect = getDinoRect();
   gameCtx.fillStyle = "#233955";
+  if (state.localGame.dino.isCrouching) {
+    gameCtx.fillRect(rect.x, rect.y + 18, rect.width, rect.height - 18);
+    gameCtx.fillRect(rect.x + rect.width - 22, rect.y + 6, 22, 18);
+    gameCtx.fillStyle = "#eef8ff";
+    gameCtx.fillRect(rect.x + rect.width - 16, rect.y + 12, 4, 4);
+    gameCtx.fillStyle = "#233955";
+    gameCtx.fillRect(rect.x + 18, rect.y + rect.height - 4, 10, 10);
+    gameCtx.fillRect(rect.x + 52, rect.y + rect.height - 4, 10, 10);
+    return;
+  }
+
   gameCtx.fillRect(rect.x, rect.y + 6, rect.width, rect.height - 6);
-  gameCtx.fillRect(rect.x + rect.width - 12, rect.y, 12, 14);
+  gameCtx.fillRect(rect.x + rect.width - 16, rect.y, 16, 18);
   gameCtx.fillStyle = "#eef8ff";
-  gameCtx.fillRect(rect.x + rect.width - 9, rect.y + 4, 3, 3);
+  gameCtx.fillRect(rect.x + rect.width - 11, rect.y + 5, 4, 4);
   gameCtx.fillStyle = "#233955";
-  gameCtx.fillRect(rect.x + 6, rect.y + rect.height - 4, 8, 10);
-  gameCtx.fillRect(rect.x + 22, rect.y + rect.height - 4, 8, 10);
+  gameCtx.fillRect(rect.x + 10, rect.y + rect.height - 4, 10, 12);
+  gameCtx.fillRect(rect.x + 40, rect.y + rect.height - 4, 10, 12);
 }
 
 function drawOverlay(title, subtitle) {
-  gameCtx.fillStyle = "rgba(16, 24, 40, 0.1)";
+  gameCtx.fillStyle = "rgba(8, 18, 30, 0.26)";
   gameCtx.fillRect(0, 0, els.gameCanvas.width, els.gameCanvas.height);
-  gameCtx.fillStyle = "#17304c";
-  gameCtx.font = "700 32px Avenir Next";
-  gameCtx.fillText(title, 34, 52);
-  gameCtx.fillStyle = "#607186";
-  gameCtx.font = "18px Avenir Next";
-  gameCtx.fillText(subtitle, 34, 82);
+  gameCtx.fillStyle = "rgba(255,255,255,0.94)";
+  gameCtx.font = "700 84px Avenir Next";
+  gameCtx.fillText(title, 70, 160);
+  gameCtx.fillStyle = "rgba(255,255,255,0.78)";
+  gameCtx.font = "700 44px Avenir Next";
+  gameCtx.fillText(subtitle, 74, 230);
 }
 
 function updateGameMetrics() {
@@ -723,7 +782,7 @@ function renderLeaderboard(room) {
           </div>
           <div class="leaderboard-meta">
             <span>角色：${participant.role === "host" ? "主持人" : "玩家"}</span>
-            <span>跳躍姿勢：${escapeHtml(participant.selectedLabel || "-")}</span>
+            <span>控制模型：${escapeHtml(participant.selectedLabel || "-")}</span>
             <span>本回合：${participant.latestScore}</span>
             <span>最佳：${participant.bestScore}</span>
             <span>累積：${participant.totalScore}</span>
@@ -801,6 +860,7 @@ function escapeHtml(value) {
 function renderRoom(room) {
   state.latestRoom = room;
   state.serverOffsetMs = room.serverTime - Date.now();
+  syncPresentationMode();
 
   els.roomStatusText.textContent = room.id;
   els.phaseText.textContent = roomPhaseLabel(room);
@@ -826,19 +886,6 @@ function renderRoom(room) {
 
   els.playerStateText.textContent = me ? me.currentState || "待命" : "待命";
   els.selectedPoseText.textContent = state.selectedLabel || me?.selectedLabel || "-";
-  els.gameStatusText.textContent =
-    state.role === "host"
-      ? "主持模式"
-      : room.phase === "running"
-        ? state.localGame.status === "dead"
-          ? "已淘汰"
-          : "奔跑中"
-        : room.phase === "countdown"
-          ? "準備起跑"
-          : room.phase === "results"
-            ? "回合結束"
-            : "等待開局";
-
   updateGameMetrics();
   renderLeaderboard(room);
   renderHistory(room);
@@ -849,15 +896,14 @@ async function joinRoom() {
   try {
     state.nickname = els.nicknameInput.value.trim() || (state.role === "host" ? "主持人" : "玩家");
     state.roomId = els.roomInput.value.trim();
-    state.selectedLabel = els.labelSelect.value;
 
     if (!state.roomId) {
       throw new Error("請輸入房間號碼");
     }
 
     if (state.role === "player") {
-      if (!state.model || !state.cameraReady || !state.selectedLabel) {
-        throw new Error("玩家需先完成模型載入、鏡頭測試與姿勢選擇");
+      if (!state.model || !state.cameraReady || !state.actionLabels) {
+        throw new Error("玩家需先完成模型載入、鏡頭測試，且模型需包含 Jump / stay / down");
       }
     }
 
@@ -926,7 +972,6 @@ async function syncPresence(reportDeath) {
     return;
   }
 
-  state.selectedLabel = els.labelSelect.value || state.selectedLabel;
   const payload = {
     roomId: state.roomId,
     participantId: state.participantId,
@@ -1004,11 +1049,6 @@ els.cameraButton.addEventListener("click", startCamera);
 els.joinRoomButton.addEventListener("click", joinRoom);
 els.startRoundButton.addEventListener("click", startRound);
 els.resetLeaderboardButton.addEventListener("click", resetLeaderboard);
-els.labelSelect.addEventListener("change", () => {
-  state.selectedLabel = els.labelSelect.value;
-  els.selectedPoseText.textContent = state.selectedLabel || "-";
-  refreshActionButtons();
-});
 els.thresholdInput.addEventListener("input", updateThreshold);
 [els.nicknameInput, els.roomInput].forEach((element) => {
   element.addEventListener("input", refreshActionButtons);
@@ -1017,7 +1057,7 @@ els.thresholdInput.addEventListener("input", updateThreshold);
 updateThreshold();
 updateRoleUI();
 els.apiBaseUrlText.textContent = state.apiBaseUrl || `${window.location.origin} (same-origin)`;
-setStatus("玩家請完成模型與鏡頭測試後加入等待室；主持人可直接加入房間");
+setStatus("玩家模型需包含 Jump / stay / down，完成鏡頭測試後加入等待室；主持人可直接加入房間");
 renderCameraPlaceholder();
 drawIdleGame("等待加入房間");
 startAnimationLoop();

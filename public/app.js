@@ -40,6 +40,7 @@ const state = {
   view: "setup",
   lastFullscreenRound: 0,
   needsFullscreenButton: false,
+  preparingNextRound: false,
 };
 
 sessionStorage.setItem(PLAYER_STORAGE_KEY, state.participantId);
@@ -485,7 +486,7 @@ async function ensureCameraReady() {
 
   setStatus("正在啟動鏡頭...");
   const WebcamClass = state.modelType === "pose" ? tmPose.Webcam : tmImage.Webcam;
-  state.webcam = new WebcamClass(480, 360, true);
+  state.webcam = new WebcamClass(480, 360, false);
   await state.webcam.setup();
   await state.webcam.play();
 
@@ -721,6 +722,7 @@ async function handleEnterRoom() {
     state.nickname = els.nicknameInput.value.trim() || (state.role === "host" ? "主持人" : "玩家");
     state.roomId = els.roomInput.value.trim();
     state.lobbyReady = false;
+    state.preparingNextRound = false;
 
     if (!state.nickname) {
       throw new Error("請先輸入名稱");
@@ -764,6 +766,7 @@ async function confirmTestAndGoLobby() {
   }
 
   state.lobbyReady = true;
+  state.preparingNextRound = true;
   await syncPresence(false);
   setView("lobby");
   setStatus("已完成模型測試，正在等待主持人開始");
@@ -775,6 +778,7 @@ async function goBackToTestingFromRoom() {
   }
 
   state.lobbyReady = false;
+  state.preparingNextRound = true;
   await syncPresence(false);
   updateTestHeader();
   setView("test");
@@ -791,6 +795,7 @@ async function updateModelFromResults() {
     els.modelUrlInput.value = nextUrl;
     savePreferences();
     state.lobbyReady = false;
+    state.preparingNextRound = true;
     await loadModel();
     await ensureCameraReady();
     await syncPresence(false);
@@ -805,6 +810,7 @@ async function updateModelFromResults() {
 
 async function startRound() {
   try {
+    state.preparingNextRound = false;
     const data = await api("/api/rooms/host/start-round", {
       method: "POST",
       body: JSON.stringify({
@@ -865,6 +871,80 @@ function renderParticipants(element, room) {
             <span>最佳：${participant.bestScore}</span>
             <span>總分：${participant.totalScore}</span>
             <span>冠軍：${participant.wins}</span>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function renderResultsLeaderboard(room) {
+  if (!room) {
+    els.resultsLeaderboardList.innerHTML = "<p class=\"muted-copy\">等待回合結束後顯示排行榜。</p>";
+    return;
+  }
+
+  const participantsById = new Map(room.participants.map((participant) => [participant.id, participant]));
+  const placedParticipantIds = new Set(room.round.standings.map((entry) => entry.participantId));
+  const rankedEntries = room.round.standings.map((entry) => {
+    const participant = participantsById.get(entry.participantId);
+    return {
+      participantId: entry.participantId,
+      nickname: entry.nickname,
+      placement: entry.placement,
+      score: entry.score,
+      totalScore: participant?.totalScore || 0,
+      wins: participant?.wins || 0,
+      bestScore: participant?.bestScore || 0,
+      isRequester: Boolean(participant?.isRequester),
+    };
+  });
+
+  const waitingEntries = room.participants
+    .filter((participant) => participant.role === "player" && !placedParticipantIds.has(participant.id))
+    .sort((left, right) => {
+      if (right.totalScore !== left.totalScore) {
+        return right.totalScore - left.totalScore;
+      }
+      if (right.wins !== left.wins) {
+        return right.wins - left.wins;
+      }
+      return right.bestScore - left.bestScore;
+    })
+    .map((participant, index) => ({
+      participantId: participant.id,
+      nickname: participant.nickname,
+      placement: rankedEntries.length + index + 1,
+      score: participant.latestScore,
+      totalScore: participant.totalScore,
+      wins: participant.wins,
+      bestScore: participant.bestScore,
+      isRequester: Boolean(participant.isRequester),
+      waiting: true,
+    }));
+
+  const allEntries = rankedEntries.concat(waitingEntries);
+  if (allEntries.length === 0) {
+    els.resultsLeaderboardList.innerHTML = "<p class=\"muted-copy\">等待玩家完成本回合後顯示排行榜。</p>";
+    return;
+  }
+
+  els.resultsLeaderboardList.innerHTML = allEntries
+    .map((entry) => {
+      const status = entry.waiting ? "等待下一輪" : `本回合 ${entry.score} 分`;
+      return `
+        <article class="participant-item ${entry.isRequester ? "me" : ""}">
+          <div class="participant-topline">
+            <div>
+              <strong>#${entry.placement} ${escapeHtml(entry.nickname)}</strong>
+            </div>
+            <strong>${status}</strong>
+          </div>
+          <div class="participant-meta">
+            <span>本回合：${entry.score}</span>
+            <span>最佳：${entry.bestScore}</span>
+            <span>總分：${entry.totalScore}</span>
+            <span>冠軍：${entry.wins}</span>
           </div>
         </article>
       `;
@@ -956,7 +1036,7 @@ function renderResults(room) {
   els.resultsChampionText.textContent = champion
     ? `本回合冠軍：${champion.nickname}，分數 ${champion.score}`
     : "等待本回合結果";
-  renderParticipants(els.resultsLeaderboardList, room);
+  renderResultsLeaderboard(room);
   renderHistory(room);
   renderEvents(els.resultsEventsList, room);
   els.resultsStartAgainButton.disabled = !(room.me && room.me.role === "host" && room.canStartRound);
@@ -971,8 +1051,12 @@ function driveViewFromRoom(room) {
     return;
   }
 
+  if (room.phase === "countdown" || room.phase === "running") {
+    state.preparingNextRound = false;
+  }
+
   if (me.role === "host") {
-    if (room.phase === "results") {
+    if (room.phase === "results" && !state.preparingNextRound) {
       setView("results");
       return;
     }
@@ -987,7 +1071,7 @@ function driveViewFromRoom(room) {
     return;
   }
 
-  if (room.phase === "results" && state.localGame.roundNumber === room.round.number) {
+  if (room.phase === "results" && !state.preparingNextRound && state.localGame.roundNumber === room.round.number) {
     setView("results");
     return;
   }

@@ -11,6 +11,8 @@ const state = {
   modelUrl: "",
   modelName: "",
   model: null,
+  modelType: "",
+  modelPackageName: "",
   labels: [],
   actionLabels: {
     jump: "",
@@ -210,6 +212,29 @@ function normalizeModelBaseUrl(rawUrl) {
   return url.toString();
 }
 
+async function fetchModelMetadata(baseUrl) {
+  const response = await fetch(`${baseUrl}metadata.json`, {
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error("無法讀取模型 metadata.json");
+  }
+
+  return response.json();
+}
+
+function resolveModelType(metadata) {
+  const packageName = String(metadata?.packageName || "").toLowerCase();
+  if (packageName.includes("/image")) {
+    return "image";
+  }
+  if (packageName.includes("/pose")) {
+    return "pose";
+  }
+  throw new Error("目前只支援 Teachable Machine Image 或 Pose 模型");
+}
+
 function normalizeActionLabel(label) {
   return String(label || "")
     .trim()
@@ -352,7 +377,9 @@ function syncActionLabelsFromInputs() {
 function refreshTestingButtonState() {
   const ready = Boolean(state.model && state.cameraReady && isActionMappingComplete());
   els.goToLobbyButton.disabled = !ready;
-  els.testModelStatus.textContent = state.model ? `模型已載入 ${state.modelName}` : "模型未載入";
+  els.testModelStatus.textContent = state.model
+    ? `模型已載入 ${state.modelName} (${state.modelType || "unknown"})`
+    : "模型未載入";
   els.testCameraStatus.textContent = state.cameraReady ? "鏡頭已啟動" : "鏡頭未啟動";
 }
 
@@ -410,16 +437,23 @@ async function loadModel() {
   const baseUrl = normalizeModelBaseUrl(els.modelUrlInput.value);
   setStatus("正在載入模型...");
 
+  const metadata = await fetchModelMetadata(baseUrl);
+  const modelType = resolveModelType(metadata);
   const modelURL = `${baseUrl}model.json`;
   const metadataURL = `${baseUrl}metadata.json`;
-  const model = await tmPose.load(modelURL, metadataURL);
-  const labels = Array.from({ length: model.getTotalClasses() }, (_, index) => model.getClassLabels()[index]);
+  const loader = modelType === "pose" ? tmPose : tmImage;
+  const model = await loader.load(modelURL, metadataURL);
+  const labels = Array.isArray(metadata.labels) && metadata.labels.length > 0
+    ? metadata.labels
+    : Array.from({ length: model.getTotalClasses() }, (_, index) => model.getClassLabels()[index]);
 
   if (labels.length < 3) {
     throw new Error("模型至少需要 3 個類別，才能對應 Jump / Stay / Down");
   }
 
   state.model = model;
+  state.modelType = modelType;
+  state.modelPackageName = String(metadata.packageName || "");
   state.modelUrl = baseUrl;
   state.modelName = new URL(baseUrl).pathname.split("/").filter(Boolean).pop() || "Pose Model";
   state.maxPredictions = model.getTotalClasses();
@@ -433,7 +467,7 @@ async function loadModel() {
   renderPredictionList();
   refreshTestingButtonState();
   syncModelInputs(baseUrl);
-  setStatus("模型已載入，請確認 Jump / Stay / Down 的標籤對應");
+  setStatus(`模型已載入，偵測到 ${modelType} 類型，請確認 Jump / Stay / Down 的標籤對應`);
 }
 
 async function ensureCameraReady() {
@@ -450,7 +484,8 @@ async function ensureCameraReady() {
   }
 
   setStatus("正在啟動鏡頭...");
-  state.webcam = new tmPose.Webcam(480, 360, true);
+  const WebcamClass = state.modelType === "pose" ? tmPose.Webcam : tmImage.Webcam;
+  state.webcam = new WebcamClass(480, 360, true);
   await state.webcam.setup();
   await state.webcam.play();
 
@@ -490,7 +525,7 @@ function computePoseCommand() {
 function drawPoseOverlay(pose) {
   [cameraCtx, cameraCloneCtx].forEach((ctx) => {
     ctx.clearRect(0, 0, els.cameraCanvas.width, els.cameraCanvas.height);
-    if (pose) {
+    if (pose && state.modelType === "pose") {
       tmPose.drawKeypoints(pose.keypoints, 0.45, ctx);
       tmPose.drawSkeleton(pose.keypoints, 0.45, ctx);
     }
@@ -503,8 +538,17 @@ async function runPosePrediction() {
   }
 
   state.webcam.update();
-  const { pose, posenetOutput } = await state.model.estimatePose(state.webcam.canvas);
-  const predictions = await state.model.predict(posenetOutput);
+  let pose = null;
+  let predictions = [];
+
+  if (state.modelType === "pose") {
+    const poseResult = await state.model.estimatePose(state.webcam.canvas);
+    pose = poseResult.pose;
+    predictions = await state.model.predict(poseResult.posenetOutput);
+  } else {
+    predictions = await state.model.predict(state.webcam.canvas);
+  }
+
   if (!predictions || predictions.length === 0) {
     return;
   }

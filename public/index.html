@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Pose Dino Party</title>
     <link rel="stylesheet" href="./style.css" />
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.7.4/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8/dist/teachablemachine-image.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/pose@0.8/dist/teachablemachine-pose.min.js"></script>
     <script src="./config.js"></script>
   </head>
@@ -78,7 +79,7 @@
             <div class="card-head">
               <div>
                 <p class="eyebrow">Camera</p>
-                <h3>鏡頭與骨架偵測</h3>
+                <h3>鏡頭與模型辨識</h3>
               </div>
               <div class="camera-statuses">
                 <span id="testModelStatus" class="pill">模型未載入</span>

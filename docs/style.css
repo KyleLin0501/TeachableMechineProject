@@ -260,6 +260,10 @@ label {
   object-fit: cover;
 }
 
+.camera-stage video {
+  display: none;
+}
+
 #cameraCanvas,
 #cameraCanvasClone {
   pointer-events: none;

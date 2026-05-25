@@ -434,6 +434,28 @@ function drawCameraPlaceholder() {
   });
 }
 
+function drawCameraFeeds(pose) {
+  const targets = [
+    [cameraCtx, els.cameraCanvas],
+    [cameraCloneCtx, els.cameraCanvasClone],
+  ];
+
+  targets.forEach(([ctx, canvas]) => {
+    ctx.save();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
+    if (state.webcam?.canvas) {
+      ctx.drawImage(state.webcam.canvas, 0, 0, canvas.width, canvas.height);
+    }
+    if (pose && state.modelType === "pose") {
+      tmPose.drawKeypoints(pose.keypoints, 0.45, ctx);
+      tmPose.drawSkeleton(pose.keypoints, 0.45, ctx);
+    }
+    ctx.restore();
+  });
+}
+
 async function loadModel() {
   const baseUrl = normalizeModelBaseUrl(els.modelUrlInput.value);
   setStatus("正在載入模型...");
@@ -501,6 +523,7 @@ async function ensureCameraReady() {
   }
 
   state.cameraReady = true;
+  drawCameraFeeds(null);
   refreshTestingButtonState();
   setStatus("鏡頭已啟動，請做出姿勢測試模型辨識結果");
 }
@@ -521,16 +544,6 @@ function computePoseCommand() {
   }
 
   return "stay";
-}
-
-function drawPoseOverlay(pose) {
-  [cameraCtx, cameraCloneCtx].forEach((ctx) => {
-    ctx.clearRect(0, 0, els.cameraCanvas.width, els.cameraCanvas.height);
-    if (pose && state.modelType === "pose") {
-      tmPose.drawKeypoints(pose.keypoints, 0.45, ctx);
-      tmPose.drawSkeleton(pose.keypoints, 0.45, ctx);
-    }
-  });
 }
 
 async function runPosePrediction() {
@@ -565,7 +578,7 @@ async function runPosePrediction() {
   state.currentConfidence = bestPrediction.probability;
   state.currentCommand = computePoseCommand();
 
-  drawPoseOverlay(pose);
+  drawCameraFeeds(pose);
   renderPoseMetrics();
   renderPredictionList();
   applyPoseCommand();

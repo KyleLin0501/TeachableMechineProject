@@ -1133,17 +1133,17 @@ function seededRandom(seed) {
 function createObstacleTimeline(seed) {
   const random = seededRandom(seed);
   const obstacles = [];
-  let spawnAt = 1800;
+  let spawnAt = 2400;
 
   while (spawnAt < 95_000) {
-    const width = 28 + Math.floor(random() * 34);
-    const height = 52 + Math.floor(random() * 88);
+    const width = 24 + Math.floor(random() * 24);
+    const height = 34 + Math.floor(random() * 42);
     obstacles.push({
       spawnAt,
       width,
       height,
     });
-    spawnAt += 1280 + Math.floor(random() * 1480);
+    spawnAt += 1650 + Math.floor(random() * 1900);
   }
 
   return obstacles;
@@ -1239,7 +1239,7 @@ function getDinoRect() {
 }
 
 function getObstacleRect(obstacle, elapsedMs) {
-  const speed = 540;
+  const speed = 420;
   const timeSinceSpawn = elapsedMs - obstacle.spawnAt;
   if (timeSinceSpawn < -1000) {
     return null;

@@ -184,6 +184,10 @@
 
             <p id="lobbyCountdownText" class="info-banner">玩家完成模型測試後，主持人即可開始。</p>
             <p id="lobbyModelSummary" class="muted-copy">模型尚未設定</p>
+            <label id="hostGameSelectWrap" class="hidden">
+              <span>主持人選擇本回合遊戲</span>
+              <select id="hostGameSelect"></select>
+            </label>
 
             <div class="secondary-actions">
               <button id="lobbyRetestButton" class="ghost-button">返回模型測試</button>
@@ -216,10 +220,11 @@
       <section id="screenGame" class="screen hidden">
         <div class="game-shell">
           <div class="game-hud">
-            <div class="hud-group">
-              <span id="gameRoomText">房間 -</span>
-              <span id="gameRoundText">第 0 回合</span>
-            </div>
+          <div class="hud-group">
+            <span id="gameRoomText">房間 -</span>
+            <span id="gameRoundText">第 0 回合</span>
+            <span id="gameScenarioText">情境一</span>
+          </div>
             <div class="hud-group">
               <span id="gameStateText">等待開始</span>
               <span id="gameScoreText">分數 0</span>
@@ -305,6 +310,10 @@
               <h3>主持人控制下一局</h3>
             </div>
           </div>
+          <label>
+            <span>更換下一回合遊戲</span>
+            <select id="resultsGameSelect"></select>
+          </label>
           <div class="secondary-actions">
             <button id="resultsStartAgainButton">再次開始遊戲</button>
           </div>

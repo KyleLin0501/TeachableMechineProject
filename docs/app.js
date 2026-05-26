@@ -1,6 +1,11 @@
 const PLAYER_STORAGE_KEY = "pose_dino_party_participant_id";
 const PREF_STORAGE_KEY = "pose_dino_party_preferences";
 const fallbackParticipantId = crypto.randomUUID();
+const GAME_OPTIONS = [
+  { id: "dino_party", name: "情境一：草原小恐龍" },
+  { id: "space_battle", name: "情境二：太空船躲避戰" },
+  { id: "chrome_runner", name: "情境三：Chrome 復古小恐龍" },
+];
 
 const state = {
   participantId: sessionStorage.getItem(PLAYER_STORAGE_KEY) || fallbackParticipantId,
@@ -109,6 +114,10 @@ const els = {
   resultsUpdateModelButton: document.getElementById("resultsUpdateModelButton"),
   resultsStartAgainButton: document.getElementById("resultsStartAgainButton"),
   resultsEventsList: document.getElementById("resultsEventsList"),
+  hostGameSelectWrap: document.getElementById("hostGameSelectWrap"),
+  hostGameSelect: document.getElementById("hostGameSelect"),
+  resultsGameSelect: document.getElementById("resultsGameSelect"),
+  gameScenarioText: document.getElementById("gameScenarioText"),
 };
 
 const cameraCtx = els.cameraCanvas.getContext("2d");
@@ -119,11 +128,24 @@ function createLocalGameState() {
   return {
     roundNumber: 0,
     seed: null,
+    gameId: "dino_party",
     startAt: null,
     status: "idle",
     score: 0,
     reportedDeath: false,
     obstacles: [],
+    chromeObstacles: [],
+    chromeSpeedMultiplier: 1,
+    ship: {
+      x: 100,
+      y: 360,
+      size: 40,
+      speed: 7,
+      cooldown: 0,
+      hp: 3,
+    },
+    asteroids: [],
+    lasers: [],
     dino: {
       x: 180,
       y: 0,
@@ -140,6 +162,14 @@ function createLocalGameState() {
       groundY: 590,
     },
   };
+}
+
+function getGameOption(gameId) {
+  return GAME_OPTIONS.find((item) => item.id === gameId) || GAME_OPTIONS[0];
+}
+
+function getGameName(gameId) {
+  return getGameOption(gameId).name;
 }
 
 function resolveApiBaseUrl() {
@@ -327,6 +357,19 @@ function setView(view) {
   } else if (document.fullscreenElement) {
     document.exitFullscreen().catch(() => {});
   }
+}
+
+function populateGameSelects() {
+  const options = GAME_OPTIONS.map((game) => `<option value="${game.id}">${game.name}</option>`).join("");
+  els.hostGameSelect.innerHTML = options;
+  els.resultsGameSelect.innerHTML = options;
+}
+
+function syncGameSelectValues(gameId) {
+  const nextValue = getGameOption(gameId).id;
+  els.hostGameSelect.value = nextValue;
+  els.resultsGameSelect.value = nextValue;
+  els.gameScenarioText.textContent = getGameName(gameId);
 }
 
 function updateRoleUI() {
@@ -840,6 +883,24 @@ async function startRound() {
   }
 }
 
+async function updateRoomGame(gameId) {
+  if (!state.roomId) {
+    return;
+  }
+
+  const data = await api("/api/rooms/host/select-game", {
+    method: "POST",
+    body: JSON.stringify({
+      roomId: state.roomId,
+      participantId: state.participantId,
+      gameId,
+    }),
+  });
+
+  renderRoom(data.room);
+  setStatus(`主持人已將下一回合切換為 ${getGameName(gameId)}`);
+}
+
 function roomPhaseLabel(room) {
   if (!room) {
     return "等待加入房間";
@@ -1023,7 +1084,7 @@ function renderLobby(room) {
   els.lobbyModelSummary.textContent =
     state.role === "player"
       ? `目前模型：${state.modelName || "-"}；控制對應：${formatActionLabels() || "尚未設定"}`
-      : `主持人可在所有玩家完成測試後開始遊戲。`;
+      : `主持人可在所有玩家完成測試後開始遊戲。下一回合：${getGameName(room.selectedGameId)}`;
 
   if (room.phase === "countdown" && room.round.startAt) {
     const remainingSeconds = Math.max(1, Math.ceil((room.round.startAt - getServerNow()) / 1000));
@@ -1038,6 +1099,8 @@ function renderLobby(room) {
 
   els.hostStartButton.classList.toggle("hidden", !(me && me.role === "host"));
   els.hostStartButton.disabled = !(me && me.role === "host" && room.canStartRound);
+  els.hostGameSelectWrap.classList.toggle("hidden", !(me && me.role === "host"));
+  syncGameSelectValues(room.selectedGameId);
   renderParticipants(els.lobbyParticipantsList, room);
   renderEvents(els.lobbyEventsList, room);
 }
@@ -1048,11 +1111,12 @@ function renderResults(room) {
   els.resultsRoundText.textContent = `第 ${room.round.number} 回合`;
   els.resultsChampionText.textContent = champion
     ? `本回合冠軍：${champion.nickname}，分數 ${champion.score}`
-    : "等待本回合結果";
+    : `等待本回合結果，下一回合目前設定為 ${getGameName(room.selectedGameId)}`;
   renderResultsLeaderboard(room);
   renderHistory(room);
   renderEvents(els.resultsEventsList, room);
   els.resultsStartAgainButton.disabled = !(room.me && room.me.role === "host" && room.canStartRound);
+  syncGameSelectValues(room.selectedGameId);
   els.resultsReadyHint.textContent = state.lobbyReady
     ? "你目前已維持就緒狀態，主持人可直接再開下一局。"
     : "若要換模型，更新後會回到測試頁重新確認。";
@@ -1113,8 +1177,14 @@ function prepareRound(room) {
   state.localGame = createLocalGameState();
   state.localGame.roundNumber = room.round.number;
   state.localGame.seed = room.round.seed;
+  state.localGame.gameId = room.round.gameId || room.selectedGameId || "dino_party";
   state.localGame.startAt = room.round.startAt;
   state.localGame.obstacles = createObstacleTimeline(room.round.seed);
+  state.localGame.chromeObstacles = createChromeObstacleTimeline(room.round.seed);
+  resetSpaceBattleState();
+  if (state.localGame.gameId === "chrome_runner") {
+    state.localGame.dino.y = state.localGame.physics.groundY - 44;
+  }
   state.lastFullscreenRound = 0;
 }
 
@@ -1147,6 +1217,39 @@ function createObstacleTimeline(seed) {
   }
 
   return obstacles;
+}
+
+function createChromeObstacleTimeline(seed) {
+  const random = seededRandom(seed + 73);
+  const obstacles = [];
+  let spawnAt = 2000;
+
+  while (spawnAt < 95_000) {
+    const type = random() > 0.52 ? "ground" : "air";
+    obstacles.push({
+      spawnAt,
+      type,
+      width: type === "ground" ? 20 : 40,
+      height: type === "ground" ? 38 + Math.floor(random() * 16) : 24,
+      yOffset: type === "ground" ? 0 : 45 + Math.floor(random() * 6),
+    });
+    spawnAt += 1500 + Math.floor(random() * 1700);
+  }
+
+  return obstacles;
+}
+
+function resetSpaceBattleState() {
+  state.localGame.ship = {
+    x: 120,
+    y: 360,
+    size: 40,
+    speed: 7,
+    cooldown: 0,
+    hp: 3,
+  };
+  state.localGame.asteroids = [];
+  state.localGame.lasers = [];
 }
 
 function updateLocalGame(deltaMs) {
@@ -1183,7 +1286,19 @@ function updateLocalGame(deltaMs) {
   }
 
   state.localGame.status = "running";
+  const elapsedMs = Math.max(0, getServerNow() - state.localGame.startAt);
+  if (state.localGame.gameId === "space_battle") {
+    updateSpaceBattle(deltaMs, elapsedMs);
+    return;
+  }
+  if (state.localGame.gameId === "chrome_runner") {
+    updateChromeRunner(deltaMs, elapsedMs);
+    return;
+  }
+  updateDinoParty(deltaMs, elapsedMs);
+}
 
+function updateDinoParty(deltaMs, elapsedMs) {
   const dt = Math.min(deltaMs, 32) / 1000;
   const dino = state.localGame.dino;
   const physics = state.localGame.physics;
@@ -1196,10 +1311,95 @@ function updateLocalGame(deltaMs) {
     dino.vy = Math.max(0, dino.vy);
   }
 
-  state.localGame.score = Math.floor(Math.max(0, getServerNow() - state.localGame.startAt) / 45);
+  state.localGame.score = Math.floor(elapsedMs / 45);
 
-  if (detectCollision(Math.max(0, getServerNow() - state.localGame.startAt))) {
+  if (detectCollision(elapsedMs)) {
     handleLocalDeath();
+  }
+}
+
+function updateChromeRunner(deltaMs, elapsedMs) {
+  const dt = Math.min(deltaMs, 32) / 16.6667;
+  const dino = state.localGame.dino;
+  dino.vy += 1.0 * dt;
+  dino.y += dino.vy * dt;
+
+  const currentHeight = dino.isCrouching ? 26 : 44;
+  const targetGround = state.localGame.physics.groundY - currentHeight;
+  if (dino.y >= targetGround) {
+    dino.y = targetGround;
+    dino.vy = 0;
+  }
+
+  state.localGame.chromeSpeedMultiplier = Math.min(3.5, 1 + state.localGame.score / 350);
+  state.localGame.score += deltaMs * 0.009;
+
+  if (detectCollision(elapsedMs)) {
+    handleLocalDeath();
+  }
+}
+
+function updateSpaceBattle(deltaMs, elapsedMs) {
+  const ship = state.localGame.ship;
+  const seconds = deltaMs / 1000;
+  state.localGame.score = Math.floor(elapsedMs / 1000);
+
+  if (ship.cooldown > 0) {
+    ship.cooldown -= 1;
+  }
+
+  const difficultyLevel = Math.floor(state.localGame.score / 30);
+  const spawnRateMs = Math.max(450, 1100 - difficultyLevel * 85);
+  const currentBucket = Math.floor(elapsedMs / spawnRateMs);
+  const previousBucket = Math.floor(Math.max(0, elapsedMs - deltaMs) / spawnRateMs);
+  if (currentBucket !== previousBucket) {
+    const random = seededRandom((state.localGame.seed || 1) + currentBucket * 13);
+    state.localGame.asteroids.push({
+      x: els.gameCanvas.width + 90,
+      y: 90 + random() * (els.gameCanvas.height - 180),
+      speed: 260 + difficultyLevel * 24 + random() * 120,
+      size: 34 + random() * 24,
+      rotation: random() * Math.PI * 2,
+      rotationSpeed: (random() - 0.5) * 0.08,
+      hp: 3,
+    });
+  }
+
+  state.localGame.lasers = state.localGame.lasers
+    .map((laser) => ({ ...laser, x: laser.x + laser.speed * seconds }))
+    .filter((laser) => laser.x < els.gameCanvas.width + 100);
+
+  for (let i = state.localGame.asteroids.length - 1; i >= 0; i -= 1) {
+    const asteroid = state.localGame.asteroids[i];
+    asteroid.x -= asteroid.speed * seconds;
+    asteroid.rotation += asteroid.rotationSpeed;
+
+    if (Math.hypot(ship.x - asteroid.x, ship.y - asteroid.y) < ship.size * 0.55 + asteroid.size * 0.38) {
+      ship.hp -= 1;
+      state.localGame.asteroids.splice(i, 1);
+      if (ship.hp <= 0) {
+        handleLocalDeath();
+      }
+      continue;
+    }
+
+    let destroyed = false;
+    for (let j = state.localGame.lasers.length - 1; j >= 0; j -= 1) {
+      const laser = state.localGame.lasers[j];
+      if (Math.hypot(laser.x - asteroid.x, laser.y - asteroid.y) < asteroid.size * 0.42 + 16) {
+        asteroid.hp -= 1;
+        state.localGame.lasers.splice(j, 1);
+        if (asteroid.hp <= 0) {
+          state.localGame.score += 10;
+          destroyed = true;
+        }
+        break;
+      }
+    }
+
+    if (destroyed || asteroid.x < -120) {
+      state.localGame.asteroids.splice(i, 1);
+    }
   }
 }
 
@@ -1209,8 +1409,27 @@ function applyPoseCommand() {
     return;
   }
 
+  if (state.localGame.gameId === "space_battle") {
+    applySpaceBattleCommand();
+    return;
+  }
+
   const dino = state.localGame.dino;
   const command = state.currentCommand;
+
+  if (state.localGame.gameId === "chrome_runner") {
+    if (command === "jump" && !state.poseArmed && dino.vy === 0) {
+      dino.vy = -14;
+      dino.isCrouching = false;
+      state.poseArmed = true;
+      return;
+    }
+    dino.isCrouching = command === "down" && dino.vy === 0;
+    if (command !== "jump") {
+      state.poseArmed = false;
+    }
+    return;
+  }
 
   dino.isCrouching = command === "down" && dino.y === 0;
 
@@ -1226,8 +1445,45 @@ function applyPoseCommand() {
   }
 }
 
+function applySpaceBattleCommand() {
+  const ship = state.localGame.ship;
+  const command = state.currentCommand;
+
+  if (command === "jump") {
+    ship.y = Math.max(60, ship.y - ship.speed * 6);
+  } else if (command === "down") {
+    ship.y = Math.min(els.gameCanvas.height - 60, ship.y + ship.speed * 6);
+  }
+
+  if (command === "stay" && !state.poseArmed && ship.cooldown <= 0) {
+    state.localGame.lasers.push({
+      x: ship.x + 30,
+      y: ship.y,
+      speed: 720,
+    });
+    ship.cooldown = 10;
+    state.poseArmed = true;
+    return;
+  }
+
+  if (command !== "stay") {
+    state.poseArmed = false;
+  }
+}
+
 function getDinoRect() {
   const { dino, physics } = state.localGame;
+  if (state.localGame.gameId === "chrome_runner") {
+    const width = dino.isCrouching ? 75 : 40;
+    const height = dino.isCrouching ? 26 : 44;
+    return {
+      x: 50,
+      y: dino.y,
+      width,
+      height,
+    };
+  }
+
   const width = dino.isCrouching ? dino.crouchWidth : dino.standingWidth;
   const height = dino.isCrouching ? dino.crouchHeight : dino.standingHeight;
   return {
@@ -1239,6 +1495,35 @@ function getDinoRect() {
 }
 
 function getObstacleRect(obstacle, elapsedMs) {
+  if (state.localGame.gameId === "chrome_runner") {
+    const speed = 280 * state.localGame.chromeSpeedMultiplier;
+    const timeSinceSpawn = elapsedMs - obstacle.spawnAt;
+    if (timeSinceSpawn < -1000) {
+      return null;
+    }
+
+    const x = els.gameCanvas.width + 40 - (timeSinceSpawn / 1000) * speed;
+    if (x < -100 || x > els.gameCanvas.width + 80) {
+      return null;
+    }
+
+    if (obstacle.type === "ground") {
+      return {
+        x,
+        y: state.localGame.physics.groundY - obstacle.height,
+        width: obstacle.width,
+        height: obstacle.height,
+      };
+    }
+
+    return {
+      x,
+      y: state.localGame.physics.groundY - obstacle.yOffset - obstacle.height,
+      width: obstacle.width,
+      height: obstacle.height,
+    };
+  }
+
   const speed = 420;
   const timeSinceSpawn = elapsedMs - obstacle.spawnAt;
   if (timeSinceSpawn < -1000) {
@@ -1259,8 +1544,13 @@ function getObstacleRect(obstacle, elapsedMs) {
 }
 
 function detectCollision(elapsedMs) {
+  if (state.localGame.gameId === "space_battle") {
+    return false;
+  }
+
   const dinoRect = getDinoRect();
-  return state.localGame.obstacles.some((obstacle) => {
+  const obstacleList = state.localGame.gameId === "chrome_runner" ? state.localGame.chromeObstacles : state.localGame.obstacles;
+  return obstacleList.some((obstacle) => {
     const obstacleRect = getObstacleRect(obstacle, elapsedMs);
     if (!obstacleRect) {
       return false;
@@ -1346,6 +1636,131 @@ function drawObstacles(elapsedMs) {
   });
 }
 
+function drawChromeRunnerScene(elapsedMs) {
+  gameCtx.fillStyle = "#f7f7f7";
+  gameCtx.fillRect(0, 0, els.gameCanvas.width, els.gameCanvas.height);
+
+  gameCtx.strokeStyle = "#535353";
+  gameCtx.lineWidth = 4;
+  gameCtx.beginPath();
+  gameCtx.moveTo(0, state.localGame.physics.groundY);
+  gameCtx.lineTo(els.gameCanvas.width, state.localGame.physics.groundY);
+  gameCtx.stroke();
+
+  drawChromeDino();
+  drawChromeObstacles(elapsedMs);
+}
+
+function drawChromeDino() {
+  const rect = getDinoRect();
+  gameCtx.fillStyle = "#535353";
+  if (state.localGame.dino.isCrouching) {
+    gameCtx.fillRect(rect.x, rect.y, 55, 26);
+    gameCtx.fillRect(rect.x + 55, rect.y + 5, 20, 15);
+    gameCtx.fillStyle = "#f7f7f7";
+    gameCtx.fillRect(rect.x + 62, rect.y + 8, 4, 4);
+    return;
+  }
+
+  gameCtx.fillRect(rect.x, rect.y + 10, 24, 34);
+  gameCtx.fillRect(rect.x - 8, rect.y + 15, 8, 10);
+  gameCtx.fillRect(rect.x + 20, rect.y, 20, 22);
+  gameCtx.fillStyle = "#f7f7f7";
+  gameCtx.fillRect(rect.x + 25, rect.y + 4, 4, 4);
+  gameCtx.fillStyle = "#535353";
+  const legOffset = state.localGame.status === "running" && state.localGame.dino.vy === 0 && performance.now() % 200 < 100 ? 4 : 0;
+  gameCtx.fillRect(rect.x + 4, rect.y + 44, 6, 6 - legOffset);
+  gameCtx.fillRect(rect.x + 14, rect.y + 44, 6, 6 + legOffset);
+}
+
+function drawChromeObstacles(elapsedMs) {
+  gameCtx.fillStyle = "#535353";
+  state.localGame.chromeObstacles.forEach((obstacle) => {
+    const rect = getObstacleRect(obstacle, elapsedMs);
+    if (!rect) {
+      return;
+    }
+
+    if (obstacle.type === "ground") {
+      gameCtx.fillRect(rect.x + 6, rect.y, 8, rect.height);
+      gameCtx.fillRect(rect.x, rect.y + 10, 6, 15);
+      gameCtx.fillRect(rect.x + 14, rect.y + 15, 6, 12);
+      return;
+    }
+
+    const flapUp = Math.floor(elapsedMs / 180) % 2 === 0;
+    gameCtx.fillRect(rect.x + 10, rect.y + 10, 20, 8);
+    gameCtx.fillRect(rect.x + 30, rect.y + 8, 10, 6);
+    if (flapUp) {
+      gameCtx.fillRect(rect.x + 14, rect.y, 14, 10);
+    } else {
+      gameCtx.fillRect(rect.x + 14, rect.y + 18, 14, 10);
+    }
+  });
+}
+
+function drawSpaceBattleScene(elapsedMs) {
+  gameCtx.fillStyle = "#0f172a";
+  gameCtx.fillRect(0, 0, els.gameCanvas.width, els.gameCanvas.height);
+
+  gameCtx.fillStyle = "rgba(255,255,255,0.9)";
+  for (let i = 0; i < 80; i += 1) {
+    const x = (i * 173 + elapsedMs * 0.08) % els.gameCanvas.width;
+    const y = (i * 97) % els.gameCanvas.height;
+    gameCtx.fillRect(els.gameCanvas.width - x, y, (i % 3) + 1, (i % 3) + 1);
+  }
+
+  drawSpaceship();
+  drawLasers();
+  drawAsteroids();
+  drawSpaceBattleHud();
+}
+
+function drawSpaceship() {
+  const ship = state.localGame.ship;
+  gameCtx.font = "48px Avenir Next";
+  gameCtx.textAlign = "center";
+  gameCtx.textBaseline = "middle";
+  gameCtx.fillText("🚀", ship.x, ship.y);
+}
+
+function drawLasers() {
+  state.localGame.lasers.forEach((laser) => {
+    gameCtx.fillStyle = "#06b6d4";
+    gameCtx.fillRect(laser.x, laser.y - 4, 26, 8);
+    gameCtx.fillStyle = "#ffffff";
+    gameCtx.fillRect(laser.x + 5, laser.y - 2, 16, 4);
+  });
+}
+
+function drawAsteroids() {
+  state.localGame.asteroids.forEach((asteroid) => {
+    gameCtx.save();
+    gameCtx.translate(asteroid.x, asteroid.y);
+    gameCtx.rotate(asteroid.rotation);
+    gameCtx.font = `${Math.max(28, asteroid.size)}px Avenir Next`;
+    gameCtx.textAlign = "center";
+    gameCtx.textBaseline = "middle";
+    gameCtx.fillText("🪨", 0, 0);
+    gameCtx.restore();
+  });
+}
+
+function drawSpaceBattleHud() {
+  const ship = state.localGame.ship;
+  gameCtx.fillStyle = "rgba(0, 0, 0, 0.5)";
+  gameCtx.fillRect(0, 0, els.gameCanvas.width, 78);
+  gameCtx.fillStyle = "#ffffff";
+  gameCtx.font = "18px Avenir Next";
+  gameCtx.textAlign = "left";
+  gameCtx.fillText(`❤️ ${"❤️ ".repeat(Math.max(0, ship.hp)).trim() || "0"}`, 24, 28);
+  gameCtx.fillStyle = "#38bdf8";
+  gameCtx.fillText(`AI: ${state.currentPose || "WAITING"} (${(state.currentConfidence * 100).toFixed(0)}%)`, 24, 56);
+  gameCtx.fillStyle = "#fbbf24";
+  gameCtx.textAlign = "right";
+  gameCtx.fillText(`分數 ${state.localGame.score}`, els.gameCanvas.width - 24, 42);
+}
+
 function drawOverlay(title, subtitle) {
   gameCtx.fillStyle = "rgba(8, 18, 30, 0.28)";
   gameCtx.fillRect(0, 0, els.gameCanvas.width, els.gameCanvas.height);
@@ -1376,29 +1791,36 @@ function renderGame() {
   const me = getMyParticipant();
   els.gameRoomText.textContent = `房間 ${state.roomId || "-"}`;
   els.gameRoundText.textContent = `第 ${state.localGame.roundNumber || 0} 回合`;
+  els.gameScenarioText.textContent = getGameName(state.localGame.gameId || room?.round?.gameId || room?.selectedGameId || "dino_party");
   els.gameStateText.textContent = room ? roomPhaseLabel(room) : "等待開始";
   els.gameScoreText.textContent = `分數 ${state.localGame.score || 0}`;
   els.gameFullscreenButton.classList.toggle("hidden", !state.needsFullscreenButton);
 
   if (!room || !me || me.role === "host" || !me.activeThisRound) {
     els.gameBanner.textContent = state.role === "host" ? "主持人控制等待室即可" : "等待主持人開始";
-    drawIdleGame("Pose Dino Party", "等待主持人開始本回合");
+    drawIdleGame(getGameName(state.localGame.gameId || room?.selectedGameId || "dino_party"), "等待主持人開始本回合");
     return;
   }
 
   const elapsedMs = Math.max(0, getServerNow() - state.localGame.startAt);
-  gameCtx.clearRect(0, 0, els.gameCanvas.width, els.gameCanvas.height);
-  gameCtx.fillStyle = "#eef8ff";
-  gameCtx.fillRect(0, 0, els.gameCanvas.width, els.gameCanvas.height);
-  drawClouds();
-  drawGround();
-  drawObstacles(elapsedMs);
-  drawDino();
+  if (state.localGame.gameId === "space_battle") {
+    drawSpaceBattleScene(elapsedMs);
+  } else if (state.localGame.gameId === "chrome_runner") {
+    drawChromeRunnerScene(elapsedMs);
+  } else {
+    gameCtx.clearRect(0, 0, els.gameCanvas.width, els.gameCanvas.height);
+    gameCtx.fillStyle = "#eef8ff";
+    gameCtx.fillRect(0, 0, els.gameCanvas.width, els.gameCanvas.height);
+    drawClouds();
+    drawGround();
+    drawObstacles(elapsedMs);
+    drawDino();
+  }
 
   if (state.localGame.status === "countdown") {
     const remainingMs = Math.max(0, state.localGame.startAt - getServerNow());
     const countdown = Math.max(1, Math.ceil(remainingMs / 1000));
-    els.gameBanner.textContent = `第 ${state.localGame.roundNumber} 回合 ${countdown} 秒後開始`;
+    els.gameBanner.textContent = `${getGameName(state.localGame.gameId)} ${countdown} 秒後開始`;
     drawOverlay("準備起跑", `${countdown}`);
     return;
   }
@@ -1415,7 +1837,7 @@ function renderGame() {
     return;
   }
 
-  els.gameBanner.textContent = `第 ${state.localGame.roundNumber} 回合進行中`;
+  els.gameBanner.textContent = `${getGameName(state.localGame.gameId)} 進行中`;
 }
 
 async function tryEnterFullscreen(announce) {
@@ -1494,6 +1916,12 @@ els.lobbyRetestButton.addEventListener("click", () => {
   });
 });
 els.hostStartButton.addEventListener("click", startRound);
+els.hostGameSelect.addEventListener("change", () => {
+  updateRoomGame(els.hostGameSelect.value).catch((error) => {
+    console.error(error);
+    setStatus(`切換遊戲失敗：${error.message}`, "error");
+  });
+});
 els.resultsRetestButton.addEventListener("click", () => {
   goBackToTestingFromRoom().catch((error) => {
     console.error(error);
@@ -1501,6 +1929,12 @@ els.resultsRetestButton.addEventListener("click", () => {
   });
 });
 els.resultsUpdateModelButton.addEventListener("click", updateModelFromResults);
+els.resultsGameSelect.addEventListener("change", () => {
+  updateRoomGame(els.resultsGameSelect.value).catch((error) => {
+    console.error(error);
+    setStatus(`切換遊戲失敗：${error.message}`, "error");
+  });
+});
 els.resultsStartAgainButton.addEventListener("click", startRound);
 els.gameFullscreenButton.addEventListener("click", () => {
   tryEnterFullscreen(false).catch((error) => {
@@ -1513,6 +1947,7 @@ document.addEventListener("fullscreenchange", () => {
 });
 
 restorePreferences();
+populateGameSelects();
 state.threshold = Number(els.thresholdInput.value);
 updateRoleUI();
 updateThreshold();

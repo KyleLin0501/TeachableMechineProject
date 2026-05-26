@@ -13,6 +13,8 @@ const ALLOWED_ORIGINS = String(process.env.ALLOWED_ORIGINS || "")
   .filter(Boolean);
 const STALE_PLAYER_MS = 180_000;
 const COUNTDOWN_MS = 5000;
+const DEFAULT_GAME_ID = "dino_party";
+const GAME_IDS = new Set(["dino_party", "space_battle", "chrome_runner"]);
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -136,6 +138,7 @@ function createRoom(roomId) {
     createdAt: now(),
     hostId: null,
     phase: "lobby",
+    selectedGameId: DEFAULT_GAME_ID,
     participants: {},
     participantOrder: [],
     lastEventId: 0,
@@ -144,6 +147,7 @@ function createRoom(roomId) {
     round: {
       number: 0,
       seed: null,
+      gameId: DEFAULT_GAME_ID,
       startAt: null,
       countdownMs: COUNTDOWN_MS,
       activeParticipantIds: [],
@@ -358,6 +362,7 @@ function roomSummary(room, requesterId) {
     id: room.id,
     phase: room.phase,
     hostId: room.hostId,
+    selectedGameId: room.selectedGameId,
     playerCount: participants.filter((participant) => participant.role === "player").length,
     readyPlayerCount: readyPlayers,
     me,
@@ -366,6 +371,7 @@ function roomSummary(room, requesterId) {
     round: {
       number: room.round.number,
       seed: room.round.seed,
+      gameId: room.round.gameId,
       startAt: room.round.startAt,
       countdownMs: room.round.countdownMs,
       activeParticipantIds: room.round.activeParticipantIds,
@@ -432,6 +438,7 @@ function startRound(room, hostId) {
   room.phase = "countdown";
   room.round.number += 1;
   room.round.seed = Math.floor(Math.random() * 1_000_000_000);
+  room.round.gameId = room.selectedGameId || DEFAULT_GAME_ID;
   room.round.startAt = now() + COUNTDOWN_MS;
   room.round.countdownMs = COUNTDOWN_MS;
   room.round.activeParticipantIds = readyParticipants.map((participant) => participant.id);
@@ -452,7 +459,11 @@ function startRound(room, hostId) {
     participant.isAlive = participant.activeThisRound;
   });
 
-  addEvent(room, `主持人已啟動第 ${room.round.number} 回合，${readyParticipants.length} 位玩家準備出發`, "countdown");
+  addEvent(
+    room,
+    `主持人已啟動第 ${room.round.number} 回合（${room.round.gameId}），${readyParticipants.length} 位玩家準備出發`,
+    "countdown"
+  );
 }
 
 function resetLeaderboard(room, hostId) {
@@ -466,6 +477,7 @@ function resetLeaderboard(room, hostId) {
   room.round = {
     number: 0,
     seed: null,
+    gameId: room.selectedGameId || DEFAULT_GAME_ID,
     startAt: null,
     countdownMs: COUNTDOWN_MS,
     activeParticipantIds: [],
@@ -492,6 +504,20 @@ function resetLeaderboard(room, hostId) {
   });
 
   addEvent(room, "主持人已重置整個賽季分數", "reset");
+}
+
+function setRoomGame(room, hostId, gameId) {
+  const host = room.participants[hostId];
+  if (!host || host.id !== room.hostId) {
+    throw new Error("Only the host can change the game");
+  }
+
+  if (!GAME_IDS.has(gameId)) {
+    throw new Error("Unsupported game id");
+  }
+
+  room.selectedGameId = gameId;
+  addEvent(room, `主持人已將下一回合遊戲切換為 ${gameId}`, "config");
 }
 
 async function handleApi(req, res, pathname, searchParams) {
@@ -583,6 +609,27 @@ async function handleApi(req, res, pathname, searchParams) {
 
     try {
       startRound(room, participantId);
+      sendJson(req, res, 200, { ok: true, room: roomSummary(room, participantId) });
+    } catch (error) {
+      sendJson(req, res, 400, { error: error.message });
+    }
+    return true;
+  }
+
+  if (req.method === "POST" && pathname === "/api/rooms/host/select-game") {
+    const body = await readJson(req);
+    const roomId = sanitizeText(body.roomId, "", 32);
+    const participantId = sanitizeText(body.participantId, "", 80);
+    const room = rooms.get(roomId);
+    const gameId = sanitizeText(body.gameId, "", 32);
+
+    if (!room) {
+      sendJson(req, res, 404, { error: "Room not found" });
+      return true;
+    }
+
+    try {
+      setRoomGame(room, participantId, gameId);
       sendJson(req, res, 200, { ok: true, room: roomSummary(room, participantId) });
     } catch (error) {
       sendJson(req, res, 400, { error: error.message });

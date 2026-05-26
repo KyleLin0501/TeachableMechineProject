@@ -29,6 +29,7 @@ const state = {
   webcam: null,
   cameraReady: false,
   predictBusy: false,
+  restartingCamera: false,
   animationStarted: false,
   joined: false,
   lobbyReady: false,
@@ -39,6 +40,11 @@ const state = {
   currentConfidence: 0,
   currentCommand: "stay",
   predictions: [],
+  latestPoseOverlay: null,
+  lastPredictAt: 0,
+  predictIntervalMs: 120,
+  lastCameraFrameAt: 0,
+  lastVideoTime: 0,
   poseArmed: false,
   serverOffsetMs: 0,
   localGame: createLocalGameState(),
@@ -181,6 +187,62 @@ function resolveApiBaseUrl() {
 
 function getApiUrl(path) {
   return `${state.apiBaseUrl}${path}`;
+}
+
+function isFileProtocol() {
+  return window.location.protocol === "file:";
+}
+
+function isMobileDevice() {
+  return /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent);
+}
+
+function getCameraConfig() {
+  return isMobileDevice()
+    ? {
+        width: 320,
+        height: 240,
+        predictIntervalMs: 220,
+      }
+    : {
+        width: 480,
+        height: 360,
+        predictIntervalMs: 120,
+      };
+}
+
+function stopCameraStream() {
+  try {
+    const stream = state.webcam?.webcam?.srcObject || els.cameraVideo.srcObject || els.cameraVideoClone.srcObject;
+    if (stream?.getTracks) {
+      stream.getTracks().forEach((track) => track.stop());
+    }
+  } catch (error) {
+    console.warn("Failed to stop camera stream", error);
+  }
+
+  els.cameraVideo.srcObject = null;
+  els.cameraVideoClone.srcObject = null;
+  state.webcam = null;
+  state.cameraReady = false;
+  state.lastVideoTime = 0;
+  state.lastCameraFrameAt = 0;
+}
+
+function isCameraStreamStalled() {
+  const videoEl = state.webcam?.webcam;
+  if (!state.cameraReady || !videoEl || document.hidden) {
+    return false;
+  }
+
+  const currentTime = Number(videoEl.currentTime || 0);
+  if (currentTime > state.lastVideoTime + 0.001) {
+    state.lastVideoTime = currentTime;
+    state.lastCameraFrameAt = performance.now();
+    return false;
+  }
+
+  return performance.now() - state.lastCameraFrameAt > 1800;
 }
 
 function getServerNow() {
@@ -550,8 +612,10 @@ async function ensureCameraReady() {
   }
 
   setStatus("正在啟動鏡頭...");
+  const cameraConfig = getCameraConfig();
+  state.predictIntervalMs = cameraConfig.predictIntervalMs;
   const WebcamClass = state.modelType === "pose" ? tmPose.Webcam : tmImage.Webcam;
-  state.webcam = new WebcamClass(480, 360, false);
+  state.webcam = new WebcamClass(cameraConfig.width, cameraConfig.height, false);
   await state.webcam.setup();
   await state.webcam.play();
 
@@ -566,9 +630,34 @@ async function ensureCameraReady() {
   }
 
   state.cameraReady = true;
+  state.lastPredictAt = 0;
+  state.lastCameraFrameAt = performance.now();
   drawCameraFeeds(null);
   refreshTestingButtonState();
   setStatus("鏡頭已啟動，請做出姿勢測試模型辨識結果");
+}
+
+async function restartCamera(reason = "camera-stalled") {
+  if (state.restartingCamera || state.role !== "player" || !state.model) {
+    return;
+  }
+
+  state.restartingCamera = true;
+  state.predictBusy = false;
+  stopCameraStream();
+  drawCameraPlaceholder();
+  refreshTestingButtonState();
+  setStatus(reason === "camera-stalled" ? "鏡頭中斷，正在自動重新啟動..." : "正在重新啟動鏡頭...", "warn");
+
+  try {
+    await ensureCameraReady();
+    setStatus("鏡頭已重新啟動");
+  } catch (error) {
+    console.error(error);
+    setStatus(`鏡頭重新啟動失敗：${error.message}`, "error");
+  } finally {
+    state.restartingCamera = false;
+  }
 }
 
 function computePoseCommand() {
@@ -620,6 +709,7 @@ async function runPosePrediction() {
   state.currentPose = bestPrediction.className;
   state.currentConfidence = bestPrediction.probability;
   state.currentCommand = computePoseCommand();
+  state.latestPoseOverlay = pose;
 
   drawCameraFeeds(pose);
   renderPoseMetrics();
@@ -640,11 +730,29 @@ function startAnimationLoop() {
     const deltaMs = frameAt - lastFrameAt;
     lastFrameAt = frameAt;
 
-    if (state.role === "player" && state.webcam && state.model && !state.predictBusy) {
+    if (state.role === "player" && state.webcam?.canvas) {
+      drawCameraFeeds(state.modelType === "pose" ? state.latestPoseOverlay : null);
+    }
+
+    if (state.role === "player" && isCameraStreamStalled()) {
+      restartCamera("camera-stalled").catch((error) => {
+        console.error(error);
+      });
+    }
+
+    if (
+      state.role === "player" &&
+      state.webcam &&
+      state.model &&
+      !state.predictBusy &&
+      frameAt - state.lastPredictAt >= state.predictIntervalMs
+    ) {
+      state.lastPredictAt = frameAt;
       state.predictBusy = true;
       runPosePrediction()
         .catch((error) => {
           console.error(error);
+          drawCameraFeeds(state.modelType === "pose" ? state.latestPoseOverlay : null);
           setStatus(`模型推論失敗：${error.message}`, "warn");
         })
         .finally(() => {
@@ -775,6 +883,9 @@ async function syncPresence(reportDeath) {
 async function handleEnterRoom() {
   try {
     savePreferences();
+    if (isFileProtocol()) {
+      setStatus("偵測到 file:// 啟動模式。若鏡頭或模型不穩，請改用 http://127.0.0.1:3000 開啟。", "warn");
+    }
     state.nickname = els.nicknameInput.value.trim() || (state.role === "host" ? "主持人" : "玩家");
     state.roomId = els.roomInput.value.trim();
     state.lobbyReady = false;
@@ -1945,6 +2056,13 @@ els.gameFullscreenButton.addEventListener("click", () => {
 document.addEventListener("fullscreenchange", () => {
   state.needsFullscreenButton = !document.fullscreenElement && state.view === "game";
 });
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && state.role === "player" && state.model && !state.cameraReady) {
+    restartCamera("page-visible").catch((error) => {
+      console.error(error);
+    });
+  }
+});
 
 restorePreferences();
 populateGameSelects();
@@ -1956,5 +2074,9 @@ renderPredictionList();
 renderPoseMetrics();
 drawCameraPlaceholder();
 setView("setup");
-setStatus("請先輸入名稱、房間與模型 URL；進入房間後會自動開啟模型測試");
+setStatus(
+  isFileProtocol()
+    ? "你目前是用 file:// 開啟頁面，鏡頭與模型推論可能不穩，建議改用 http://127.0.0.1:3000 啟動。"
+    : "請先輸入名稱、房間與模型 URL；進入房間後會自動開啟模型測試"
+);
 startAnimationLoop();
